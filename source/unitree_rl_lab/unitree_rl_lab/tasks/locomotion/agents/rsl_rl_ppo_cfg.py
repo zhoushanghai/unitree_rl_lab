@@ -39,3 +39,16 @@ class BasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+
+@configclass
+class G1GruActorPPORunnerCfg(BasePPORunnerCfg):
+    """PPO runner config for G1 velocity task with GRU actor."""
+
+    def __post_init__(self):
+        # 关键点：仅把 actor 的模型类型切到 RNNModel，critic 继续使用 MLP，减少改动面。
+        self.actor.class_name = "RNNModel"
+        # 关键点：显式指定使用 GRU（不是 LSTM）。
+        self.actor.rnn_type = "gru"
+        self.actor.rnn_hidden_dim = 256
+        self.actor.rnn_num_layers = 1
