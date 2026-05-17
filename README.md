@@ -148,3 +148,20 @@ This repository is built upon the support and contributions of the following ope
 - [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
 - [robot_lab](https://github.com/fan-ziqi/robot_lab): Referenced for project structure and parts of the implementation.
 - [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.
+
+
+```
+cd rsl_rl && pip install -e .
+```
+
+```
+
+CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
+  --task Unitree-G1-29dof-Velocity \
+  --num_envs 4096 \
+  --seed 42 \
+  --max_iterations 5000000 \
+  --experiment_name g1_velocity \
+  --run_name lr3e4_hist5 \
+  --video --video_length 300 --video_interval 50000
+```
