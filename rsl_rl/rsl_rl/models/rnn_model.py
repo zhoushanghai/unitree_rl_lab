@@ -13,6 +13,7 @@ from tensordict import TensorDict
 
 from rsl_rl.models.mlp_model import MLPModel
 from rsl_rl.modules import RNN, HiddenState
+from rsl_rl.utils import unpad_trajectories
 
 
 class RNNModel(MLPModel):
@@ -77,11 +78,14 @@ class RNNModel(MLPModel):
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
         """Build actor latent as recurrent memory concatenated with current-step observations."""
-        # Current-step actor observation after concat (+ optional normalization): [N, obs_dim]
-        obs_latent = super().get_latent(obs)
+        # Current-step actor observation after concat (+ optional normalization).
+        # During recurrent PPO update, this tensor is padded: [T, num_trajectories, obs_dim].
+        obs_latent_padded = super().get_latent(obs)
         # Recurrent memory from GRU/LSTM at current step: [N, rnn_hidden_dim]
-        rnn_latent = self.rnn(obs_latent, masks, hidden_state).squeeze(0)
-        # Final actor latent uses skip connection: [N, rnn_hidden_dim + obs_dim]
+        rnn_latent = self.rnn(obs_latent_padded, masks, hidden_state).squeeze(0)
+        # 关键点：RNN 分支在 batch_mode 下已做 unpad，这里必须对 skip 分支做同样处理以对齐 batch 维度。
+        obs_latent = unpad_trajectories(obs_latent_padded, masks) if masks is not None else obs_latent_padded
+        # Final actor latent uses skip connection: [N, rnn_hidden_dim + obs_dim].
         return torch.cat((rnn_latent, obs_latent), dim=-1)
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:

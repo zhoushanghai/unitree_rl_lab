@@ -165,14 +165,14 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --run_name lr3e4_hist5 \
   --video --video_length 300 --video_interval 50000
 
-
-./unitree_rl_lab.sh -t \
+ 
+CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --task Unitree-G1-29dof-Velocity-GRU \
   --num_envs 4096 \
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name GRU \
-  --run_name test1 \
+  --run_name test1——5input \
   --video --video_length 300 --video_interval 50000
 
 

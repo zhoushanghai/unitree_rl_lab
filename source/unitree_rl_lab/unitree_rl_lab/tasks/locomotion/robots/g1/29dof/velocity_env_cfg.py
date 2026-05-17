@@ -404,3 +404,25 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 10
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+
+
+@configclass
+class RobotGruObs1EnvCfg(RobotEnvCfg):
+    """G1 GRU task env cfg with single-frame observations."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # 关键点：GRU 任务仅使用当前帧观测（history_length=1），时序信息由 RNN hidden state 负责。
+        self.observations.policy.history_length = 1
+        self.observations.critic.history_length = 1
+
+
+@configclass
+class RobotGruObs1PlayEnvCfg(RobotPlayEnvCfg):
+    """Play cfg for G1 GRU task with single-frame observations."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        # 关键点：推理/播放阶段保持与训练一致，同样使用 1 帧观测输入。
+        self.observations.policy.history_length = 1
+        self.observations.critic.history_length = 1
