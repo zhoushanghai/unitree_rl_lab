@@ -305,6 +305,8 @@ def apply_apf_to_velocity_command(
     beta: float = 2.0,
     alpha: float = 0.5,
     lin_vel_xy_max: float = 1.0,
+    no_contact_delta_mode: str = "zero",
+    no_contact_delta_decay_factor: float = 0.5,
 ):
     """将 APF 排斥速度叠加到当前采样速度命令上（仅改 vx, vy，保持 wz 不变）。
 
@@ -336,36 +338,65 @@ def apply_apf_to_velocity_command(
     v_cmd_xy = cmd[active_env_ids, :2]
     wz = cmd[active_env_ids, 2]
 
-    # 机器人到障碍点的相对向量：r = p_robot - p_obstacle（世界系，XY）
-    robot_xy = robot.data.root_pos_w[active_env_ids, :2]
-    r_vec = robot_xy.unsqueeze(1) - points_w[active_env_ids, :, :2]
-    d_i = torch.linalg.norm(r_vec, dim=-1)
+    # 先以“严格等于原始命令”初始化输出；只有存在有效碰撞点时才会改写。
+    # 这保证了：无碰撞点时 v_out == v_cmd（不做叠加，也不做限幅）。
+    v_out_xy = v_cmd_xy.clone()
+    delta_v_b = torch.zeros_like(v_cmd_xy)
 
-    # 单位排斥方向；当 d_i 很小时用 eps 防止除零。
-    r_hat = r_vec / (d_i.unsqueeze(-1) + 1.0e-6)
+    # 标记每个 env 是否存在有效碰撞点槽位。
+    has_valid_contact = torch.any(valid[active_env_ids], dim=1)
+    env_ids_with_contact = active_env_ids[has_valid_contact]
+    env_ids_no_contact = active_env_ids[~has_valid_contact]
 
-    # APF 距离权重窗：d<=rho 近区权重大，超过窗口后衰减到 0。
-    w_d = torch.clamp(1.0 - torch.clamp(d_i - rho, min=0.0) / R, min=0.0) ** beta
-    w_d = w_d * valid[active_env_ids].float()
+    # 仅对“有有效碰撞点”的 env 计算 APF 叠加 + 限幅。
+    if env_ids_with_contact.numel() > 0:
+        # 机器人到障碍点的相对向量：r = p_robot - p_obstacle（世界系，XY）
+        robot_xy_c = robot.data.root_pos_w[env_ids_with_contact, :2]
+        r_vec = robot_xy_c.unsqueeze(1) - points_w[env_ids_with_contact, :, :2]
+        d_i = torch.linalg.norm(r_vec, dim=-1)
 
-    # 世界系排斥速度合成：Δv_w = Σ(k * w_d * r_hat)
-    delta_v_w_current = torch.sum(k * w_d.unsqueeze(-1) * r_hat, dim=1)
+        # 单位排斥方向；当 d_i 很小时用 eps 防止除零。
+        r_hat = r_vec / (d_i.unsqueeze(-1) + 1.0e-6)
 
-    # EMA 平滑（保留低频趋势，削弱碰撞瞬时尖峰）。
-    env._apf_delta_v_w[active_env_ids] = alpha * env._apf_delta_v_w[active_env_ids] + (1.0 - alpha) * delta_v_w_current
+        # APF 距离权重窗：d<=rho 近区权重大，超过窗口后衰减到 0。
+        w_d = torch.clamp(1.0 - torch.clamp(d_i - rho, min=0.0) / R, min=0.0) ** beta
+        w_d = w_d * valid[env_ids_with_contact].float()
 
-    # 世界系 -> base 系（只用 yaw 旋转，保持平面控制语义）。
-    yaw = robot.data.heading_w[active_env_ids]
-    cos_y = torch.cos(-yaw)
-    sin_y = torch.sin(-yaw)
-    delta_vx_b = cos_y * env._apf_delta_v_w[active_env_ids, 0] - sin_y * env._apf_delta_v_w[active_env_ids, 1]
-    delta_vy_b = sin_y * env._apf_delta_v_w[active_env_ids, 0] + cos_y * env._apf_delta_v_w[active_env_ids, 1]
-    delta_v_b = torch.stack((delta_vx_b, delta_vy_b), dim=-1)
+        # 世界系排斥速度合成：Δv_w = Σ(k * w_d * r_hat)
+        delta_v_w_current = torch.sum(k * w_d.unsqueeze(-1) * r_hat, dim=1)
 
-    # 合成后只做“平面模长”限幅，尽量不破坏方向。
-    v_raw_xy = v_cmd_xy + delta_v_b
-    speed = torch.linalg.norm(v_raw_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
-    v_out_xy = v_raw_xy * torch.clamp(lin_vel_xy_max / speed, max=1.0)
+        # EMA 平滑（保留低频趋势，削弱碰撞瞬时尖峰）。
+        env._apf_delta_v_w[env_ids_with_contact] = (
+            alpha * env._apf_delta_v_w[env_ids_with_contact] + (1.0 - alpha) * delta_v_w_current
+        )
+
+        # 世界系 -> base 系（只用 yaw 旋转，保持平面控制语义）。
+        yaw = robot.data.heading_w[env_ids_with_contact]
+        cos_y = torch.cos(-yaw)
+        sin_y = torch.sin(-yaw)
+        delta_vx_b = cos_y * env._apf_delta_v_w[env_ids_with_contact, 0] - sin_y * env._apf_delta_v_w[env_ids_with_contact, 1]
+        delta_vy_b = sin_y * env._apf_delta_v_w[env_ids_with_contact, 0] + cos_y * env._apf_delta_v_w[env_ids_with_contact, 1]
+        delta_v_b_with_contact = torch.stack((delta_vx_b, delta_vy_b), dim=-1)
+
+        # 合成后只对“有碰撞点”的 env 做平面模长限幅。
+        v_cmd_xy_with_contact = cmd[env_ids_with_contact, :2]
+        v_raw_xy = v_cmd_xy_with_contact + delta_v_b_with_contact
+        speed = torch.linalg.norm(v_raw_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
+        v_out_xy_with_contact = v_raw_xy * torch.clamp(lin_vel_xy_max / speed, max=1.0)
+
+        v_out_xy[has_valid_contact] = v_out_xy_with_contact
+        delta_v_b[has_valid_contact] = delta_v_b_with_contact
+
+    # 对“无碰撞点”环境可选处理 EMA 状态：
+    # - zero: 直接清零（推荐，收敛快，语义最清晰）
+    # - decay: 按固定因子衰减（保留少量惯性）
+    if env_ids_no_contact.numel() > 0:
+        if no_contact_delta_mode == "decay":
+            keep = float(no_contact_delta_decay_factor)
+            keep = max(0.0, min(1.0, keep))
+            env._apf_delta_v_w[env_ids_no_contact] *= keep
+        else:
+            env._apf_delta_v_w[env_ids_no_contact] = 0.0
 
     # 回写命令（策略看到的 velocity_commands 即为 APF 修正后的速度）。
     cmd[active_env_ids, 0:2] = v_out_xy

@@ -36,6 +36,12 @@ class ApfCfg:
     # 合成后平面速度模长上限（m/s）
     lin_vel_xy_max: float = 1.0
 
+    # 无有效碰撞点时如何处理 APF 的 EMA 内部状态：
+    # - "zero" : 直接清零（推荐，且能保证无碰撞时 v_out 严格等于 v_cmd）
+    # - "decay": 按保留系数衰减（保留少量历史惯性）
+    no_contact_delta_mode: str = "zero"
+    no_contact_delta_decay_factor: float = 0.5
+
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -262,6 +268,8 @@ class EventCfg:
             "beta": 2.0,
             "alpha": 0.5,
             "lin_vel_xy_max": 1.0,
+            "no_contact_delta_mode": "zero",
+            "no_contact_delta_decay_factor": 0.5,
         },
     )
     push_robot = EventTerm(
@@ -514,6 +522,10 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.apply_apf_to_base_velocity.params["beta"] = self.apf.beta
         self.events.apply_apf_to_base_velocity.params["alpha"] = self.apf.alpha
         self.events.apply_apf_to_base_velocity.params["lin_vel_xy_max"] = self.apf.lin_vel_xy_max
+        self.events.apply_apf_to_base_velocity.params["no_contact_delta_mode"] = self.apf.no_contact_delta_mode
+        self.events.apply_apf_to_base_velocity.params["no_contact_delta_decay_factor"] = (
+            self.apf.no_contact_delta_decay_factor
+        )
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
