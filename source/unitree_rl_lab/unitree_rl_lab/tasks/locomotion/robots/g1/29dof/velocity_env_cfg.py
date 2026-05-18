@@ -345,6 +345,12 @@ class ObservationsCfg:
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         # Critic 同样对齐“输入模型看旧 cmd”的约定，避免 actor/critic 命令语义不一致。
         velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
+        # 特权信息：仅给 Critic 的碰撞点槽位观测（机体系 x/y + valid）。
+        # 说明：Policy 不接此项，保持“模型输入旧 cmd + 本体观测”，把碰撞几何信息交由 Critic 辅助学习。
+        obstacle_collision_slots = ObsTerm(
+            func=mdp.obstacle_collision_slots_base_xy,
+            params={"max_points": 10},
+        )
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
         last_action = ObsTerm(func=mdp.last_action)

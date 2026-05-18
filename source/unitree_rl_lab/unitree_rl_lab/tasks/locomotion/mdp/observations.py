@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import torch
 from typing import TYPE_CHECKING
+try:
+    from isaaclab.utils.math import quat_apply_inverse
+except ImportError:
+    from isaaclab.utils.math import quat_rotate_inverse as quat_apply_inverse
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -36,3 +40,39 @@ def gait_phase(env: ManagerBasedRLEnv, period: float) -> torch.Tensor:
     phase[:, 0] = torch.sin(global_phase * torch.pi * 2.0)
     phase[:, 1] = torch.cos(global_phase * torch.pi * 2.0)
     return phase
+
+
+def obstacle_collision_slots_base_xy(env: ManagerBasedRLEnv, max_points: int = 10) -> torch.Tensor:
+    """返回给 Critic 的碰撞点特权观测：每槽 (x_b, y_b, valid) 交错展开。
+
+    输出形状：
+    - (num_envs, 3 * max_points)
+    - 排列方式: [x0, y0, v0, x1, y1, v1, ...]
+
+    语义约定：
+    - x_b, y_b 为“机体系”下的碰撞点坐标（由世界系点减根位置后再做 quat_apply_inverse）。
+    - valid∈{0,1}，无效槽位时 xy 会被强制置零，避免给 Critic 注入噪声。
+    """
+    n = env.num_envs
+    device = env.device
+    out = torch.zeros((n, 3 * max_points), dtype=torch.float32, device=device)
+
+    # 若缓存尚未初始化（例如首步或未启用碰撞缓存事件），返回全零占位，保证训练流程稳定。
+    if (not hasattr(env, "_obstacle_collision_points_w")) or (not hasattr(env, "_obstacle_collision_slot_valid")):
+        return out
+
+    points_w = env._obstacle_collision_points_w[:, :max_points, :3]  # (n, K, 3)
+    valid = env._obstacle_collision_slot_valid[:, :max_points]  # (n, K)
+    robot = env.scene["robot"]
+
+    # 世界系点 -> 机体系偏移：先减 root_pos_w，再按 root_quat_w 做 inverse 旋转。
+    root_pos = robot.data.root_pos_w.unsqueeze(1).expand(-1, max_points, -1)
+    offsets_w = points_w - root_pos
+    quat_flat = robot.data.root_quat_w.unsqueeze(1).expand(-1, max_points, -1).reshape(n * max_points, 4)
+    offsets_flat = offsets_w.reshape(n * max_points, 3)
+    offsets_b = quat_apply_inverse(quat_flat, offsets_flat).reshape(n, max_points, 3)
+
+    v = valid.to(dtype=torch.float32)
+    xy = offsets_b[:, :, :2] * v.unsqueeze(-1)
+    slots = torch.stack((xy[:, :, 0], xy[:, :, 1], v), dim=-1)
+    return slots.reshape(n, 3 * max_points)
