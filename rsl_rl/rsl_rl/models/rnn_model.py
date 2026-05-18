@@ -16,9 +16,19 @@ from rsl_rl.modules import RNN, HiddenState
 from rsl_rl.utils import unpad_trajectories
 
 
-def _combine_rnn_mlp_input(rnn_out: torch.Tensor, obs: torch.Tensor, *, concat_obs: bool) -> torch.Tensor:
+def _combine_rnn_mlp_input(
+    rnn_out: torch.Tensor,
+    obs: torch.Tensor,
+    *,
+    concat_obs: bool,
+    concat_obs_exclude_tail_dims: int = 0,
+) -> torch.Tensor:
     """Build MLP input from RNN output and optional current-step observation skip."""
     if concat_obs:
+        # Allow excluding a tail slice of obs from the MLP skip path
+        # while still feeding full obs into the RNN branch.
+        if concat_obs_exclude_tail_dims > 0:
+            obs = obs[..., :-concat_obs_exclude_tail_dims]
         return torch.cat((rnn_out, obs), dim=-1)
     return rnn_out
 
@@ -49,6 +59,7 @@ class RNNModel(MLPModel):
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
         rnn_concat_obs: bool = True,
+        rnn_concat_obs_exclude_tail_dims: int = 0,
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -65,9 +76,14 @@ class RNNModel(MLPModel):
             rnn_hidden_dim: Dimension of the RNN hidden state.
             rnn_num_layers: Number of RNN layers.
             rnn_concat_obs: If True, MLP input is ``concat(rnn_out, obs)``; if False, only ``rnn_out``.
+            rnn_concat_obs_exclude_tail_dims: Number of dims to exclude from the end of ``obs`` when
+                ``rnn_concat_obs=True``. Excluded dims still enter the RNN branch.
         """
+        if rnn_concat_obs_exclude_tail_dims < 0:
+            raise ValueError("rnn_concat_obs_exclude_tail_dims must be >= 0.")
         self.latent_dim = rnn_hidden_dim
         self.rnn_concat_obs = rnn_concat_obs
+        self.rnn_concat_obs_exclude_tail_dims = rnn_concat_obs_exclude_tail_dims
 
         # Initialize the parent MLP model
         super().__init__(
@@ -83,6 +99,11 @@ class RNNModel(MLPModel):
 
         # RNN
         self.rnn = RNN(self.obs_dim, rnn_hidden_dim, rnn_num_layers, rnn_type)
+        if self.rnn_concat_obs_exclude_tail_dims >= self.obs_dim:
+            raise ValueError(
+                f"rnn_concat_obs_exclude_tail_dims ({self.rnn_concat_obs_exclude_tail_dims}) must be smaller than "
+                f"obs_dim ({self.obs_dim})."
+            )
 
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
@@ -97,7 +118,12 @@ class RNNModel(MLPModel):
             return rnn_latent
         # 关键点：RNN 分支在 batch_mode 下已做 unpad，skip 分支必须同步 unpad 以对齐 batch 维度。
         obs_latent = unpad_trajectories(obs_latent_padded, masks) if masks is not None else obs_latent_padded
-        return _combine_rnn_mlp_input(rnn_latent, obs_latent, concat_obs=True)
+        return _combine_rnn_mlp_input(
+            rnn_latent,
+            obs_latent,
+            concat_obs=True,
+            concat_obs_exclude_tail_dims=self.rnn_concat_obs_exclude_tail_dims,
+        )
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
         """Reset the recurrent hidden state of the RNN."""
@@ -127,7 +153,7 @@ class RNNModel(MLPModel):
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
         if self.rnn_concat_obs:
-            return self.latent_dim + self.obs_dim
+            return self.latent_dim + self.obs_dim - self.rnn_concat_obs_exclude_tail_dims
         return self.latent_dim
 
 
@@ -146,6 +172,7 @@ class _TorchGRUModel(nn.Module):
             self.deterministic_output = nn.Identity()
         self.rnn.cpu()
         self.rnn_concat_obs = model.rnn_concat_obs
+        self.rnn_concat_obs_exclude_tail_dims = model.rnn_concat_obs_exclude_tail_dims
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -154,7 +181,14 @@ class _TorchGRUModel(nn.Module):
         rnn_out, h = self.rnn(x.unsqueeze(0), self.hidden_state)
         self.hidden_state[:] = h  # type: ignore
         rnn_out = rnn_out.squeeze(0)
-        out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
+        out = self.mlp(
+            _combine_rnn_mlp_input(
+                rnn_out,
+                x,
+                concat_obs=self.rnn_concat_obs,
+                concat_obs_exclude_tail_dims=self.rnn_concat_obs_exclude_tail_dims,
+            )
+        )
         return self.deterministic_output(out)
 
     @torch.jit.export
@@ -177,6 +211,7 @@ class _TorchLSTMModel(nn.Module):
         else:
             self.deterministic_output = nn.Identity()
         self.rnn_concat_obs = model.rnn_concat_obs
+        self.rnn_concat_obs_exclude_tail_dims = model.rnn_concat_obs_exclude_tail_dims
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -187,7 +222,14 @@ class _TorchLSTMModel(nn.Module):
         self.hidden_state[:] = h  # type: ignore
         self.cell_state[:] = c  # type: ignore
         rnn_out = rnn_out.squeeze(0)
-        out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
+        out = self.mlp(
+            _combine_rnn_mlp_input(
+                rnn_out,
+                x,
+                concat_obs=self.rnn_concat_obs,
+                concat_obs_exclude_tail_dims=self.rnn_concat_obs_exclude_tail_dims,
+            )
+        )
         return self.deterministic_output(out)
 
     @torch.jit.export
@@ -226,6 +268,7 @@ class _OnnxRNNModel(nn.Module):
         self.hidden_size = self.rnn.hidden_size
         self.num_layers = self.rnn.num_layers
         self.rnn_concat_obs = model.rnn_concat_obs
+        self.rnn_concat_obs_exclude_tail_dims = model.rnn_concat_obs_exclude_tail_dims
 
     def forward(
         self, obs: torch.Tensor, h_in: torch.Tensor, c_in: torch.Tensor | None = None
@@ -236,13 +279,27 @@ class _OnnxRNNModel(nn.Module):
         if self.rnn_type == "lstm":
             rnn_out, (h, c) = self.rnn(x.unsqueeze(0), (h_in, c_in))
             rnn_out = rnn_out.squeeze(0)
-            out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
+            out = self.mlp(
+                _combine_rnn_mlp_input(
+                    rnn_out,
+                    x,
+                    concat_obs=self.rnn_concat_obs,
+                    concat_obs_exclude_tail_dims=self.rnn_concat_obs_exclude_tail_dims,
+                )
+            )
             out = self.deterministic_output(out)
             return out, h, c
         else:
             rnn_out, h = self.rnn(x.unsqueeze(0), h_in)
             rnn_out = rnn_out.squeeze(0)
-            out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
+            out = self.mlp(
+                _combine_rnn_mlp_input(
+                    rnn_out,
+                    x,
+                    concat_obs=self.rnn_concat_obs,
+                    concat_obs_exclude_tail_dims=self.rnn_concat_obs_exclude_tail_dims,
+                )
+            )
             out = self.deterministic_output(out)
             return out, h, None
 

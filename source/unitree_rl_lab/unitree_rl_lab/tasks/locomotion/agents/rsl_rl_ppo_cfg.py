@@ -54,3 +54,7 @@ class G1GruActorPPORunnerCfg(BasePPORunnerCfg):
         self.actor.rnn_num_layers = 1
         # True: MLP_in = concat(gru_hidden, obs)；False: MLP_in = gru_hidden only
         self.actor.rnn_concat_obs = True
+        # 仅让碰撞点进入 GRU 分支，不进入后续 MLP skip。
+        # 当前 policy history_length=5，且 obstacle_collision_slots=10*(x,y,valid)=30 dims/帧，
+        # 因此需要从 obs skip 尾部排除 30*5=150 dims。
+        self.actor.rnn_concat_obs_exclude_tail_dims = 150

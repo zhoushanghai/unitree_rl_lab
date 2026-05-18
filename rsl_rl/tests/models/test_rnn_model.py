@@ -48,6 +48,12 @@ class TestMlpInputMode:
         assert model.rnn_concat_obs == rnn_concat_obs
         assert model.mlp[0].in_features == expected_in
 
+    def test_mlp_input_dim_excludes_obs_tail_when_configured(self) -> None:
+        """When configured, trailing obs dims should bypass MLP skip concat."""
+        exclude_tail = 3
+        model, _ = _make_rnn_model(rnn_concat_obs=True, rnn_concat_obs_exclude_tail_dims=exclude_tail)
+        assert model.mlp[0].in_features == 16 + (OBS_DIM - exclude_tail)
+
 
 class TestHiddenStateReset:
     """Tests for hidden state reset behavior on done environments."""
