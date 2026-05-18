@@ -89,6 +89,17 @@ class RobotSceneCfg(InteractiveSceneCfg):
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+    # 障碍专用接触传感器（碰撞检测 + 碰撞点记录入口）：
+    # - prim_path 仍覆盖机器人各刚体
+    # - 但通过 filter_prim_paths_expr 强制只统计与 Obstacle 的接触
+    # - 开启 track_contact_points 后可直接读取 contact_pos_w（真实碰撞点坐标）
+    obstacle_contact_forces = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/.*",
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Obstacle"],
+        history_length=3,
+        track_air_time=False,
+        track_contact_points=True,
+    )
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -173,21 +184,44 @@ class EventCfg:
             "stash_z_offset_m": -5.0,
         },
     )
+    # reset 时清空碰撞点缓存（每个 env 都从空缓存开始）。
+    reset_obstacle_collision_points = EventTerm(
+        func=mdp.reset_obstacle_collision_point_cache,
+        mode="reset",
+        params={
+            "max_points": 10,
+        },
+    )
 
     # interval
-    # interval 阶段高频轮询（20Hz）：
+    # interval 阶段高频轮询（50Hz，与控制频率 step_dt=0.02s 对齐）：
     # - 当某 env 到达其采样触发时刻后，执行一次瞬移；
     # - 瞬移目标为机身“水平 +x 前方 0.8m”；
     # - 事件函数内部会打标记，保证每回合每 env 只触发一次。
     spawn_obstacle_forward_once = EventTerm(
         func=mdp.spawn_obstacle_forward_once,
         mode="interval",
-        interval_range_s=(0.05, 0.05),
+        interval_range_s=(0.02, 0.02),
         params={
             "forward_offset_m": 0.8,
             "obstacle_half_height_m": 0.5,
             "asset_cfg": SceneEntityCfg("obstacle"),
             "robot_cfg": SceneEntityCfg("robot"),
+        },
+    )
+    # interval 高频记录：从障碍专用 contact sensor 更新碰撞点缓存。
+    # 这里只做检测与记录，不施加 APF、不改速度命令。
+    update_obstacle_collision_points = EventTerm(
+        func=mdp.update_obstacle_collision_point_cache,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "sensor_cfg": SceneEntityCfg("obstacle_contact_forces"),
+            "robot_cfg": SceneEntityCfg("robot"),
+            "max_points": 10,
+            "force_threshold": 0.3,
+            "merge_distance_m": 0.02,
+            "keep_radius_m": 1.0,
         },
     )
     push_robot = EventTerm(
@@ -426,6 +460,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
+        self.scene.obstacle_contact_forces.update_period = self.sim.dt
         self.scene.height_scanner.update_period = self.decimation * self.sim.dt
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
