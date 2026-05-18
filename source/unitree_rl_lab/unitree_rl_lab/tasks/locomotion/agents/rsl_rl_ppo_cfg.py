@@ -52,3 +52,5 @@ class G1GruActorPPORunnerCfg(BasePPORunnerCfg):
         self.actor.rnn_type = "gru"
         self.actor.rnn_hidden_dim = 256
         self.actor.rnn_num_layers = 1
+        # True: MLP_in = concat(gru_hidden, obs)；False: MLP_in = gru_hidden only
+        self.actor.rnn_concat_obs = True

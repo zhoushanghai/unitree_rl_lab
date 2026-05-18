@@ -16,6 +16,13 @@ from rsl_rl.modules import RNN, HiddenState
 from rsl_rl.utils import unpad_trajectories
 
 
+def _combine_rnn_mlp_input(rnn_out: torch.Tensor, obs: torch.Tensor, *, concat_obs: bool) -> torch.Tensor:
+    """Build MLP input from RNN output and optional current-step observation skip."""
+    if concat_obs:
+        return torch.cat((rnn_out, obs), dim=-1)
+    return rnn_out
+
+
 class RNNModel(MLPModel):
     """RNN-based neural model.
 
@@ -41,6 +48,7 @@ class RNNModel(MLPModel):
         rnn_type: str = "lstm",
         rnn_hidden_dim: int = 256,
         rnn_num_layers: int = 1,
+        rnn_concat_obs: bool = True,
     ) -> None:
         """Initialize the RNN-based model.
 
@@ -56,8 +64,10 @@ class RNNModel(MLPModel):
             rnn_type: Type of RNN to use ("lstm" or "gru").
             rnn_hidden_dim: Dimension of the RNN hidden state.
             rnn_num_layers: Number of RNN layers.
+            rnn_concat_obs: If True, MLP input is ``concat(rnn_out, obs)``; if False, only ``rnn_out``.
         """
         self.latent_dim = rnn_hidden_dim
+        self.rnn_concat_obs = rnn_concat_obs
 
         # Initialize the parent MLP model
         super().__init__(
@@ -77,16 +87,17 @@ class RNNModel(MLPModel):
     def get_latent(
         self, obs: TensorDict, masks: torch.Tensor | None = None, hidden_state: HiddenState = None
     ) -> torch.Tensor:
-        """Build actor latent as recurrent memory concatenated with current-step observations."""
+        """Build MLP latent from RNN memory, optionally concatenated with current-step observations."""
         # Current-step actor observation after concat (+ optional normalization).
         # During recurrent PPO update, this tensor is padded: [T, num_trajectories, obs_dim].
         obs_latent_padded = super().get_latent(obs)
         # Recurrent memory from GRU/LSTM at current step: [N, rnn_hidden_dim]
         rnn_latent = self.rnn(obs_latent_padded, masks, hidden_state).squeeze(0)
-        # 关键点：RNN 分支在 batch_mode 下已做 unpad，这里必须对 skip 分支做同样处理以对齐 batch 维度。
+        if not self.rnn_concat_obs:
+            return rnn_latent
+        # 关键点：RNN 分支在 batch_mode 下已做 unpad，skip 分支必须同步 unpad 以对齐 batch 维度。
         obs_latent = unpad_trajectories(obs_latent_padded, masks) if masks is not None else obs_latent_padded
-        # Final actor latent uses skip connection: [N, rnn_hidden_dim + obs_dim].
-        return torch.cat((rnn_latent, obs_latent), dim=-1)
+        return _combine_rnn_mlp_input(rnn_latent, obs_latent, concat_obs=True)
 
     def reset(self, dones: torch.Tensor | None = None, hidden_state: HiddenState = None) -> None:
         """Reset the recurrent hidden state of the RNN."""
@@ -115,8 +126,9 @@ class RNNModel(MLPModel):
 
     def _get_latent_dim(self) -> int:
         """Return the latent dimensionality consumed by the MLP head."""
-        # MLP input = recurrent memory + current-step observation
-        return self.latent_dim + self.obs_dim
+        if self.rnn_concat_obs:
+            return self.latent_dim + self.obs_dim
+        return self.latent_dim
 
 
 class _TorchGRUModel(nn.Module):
@@ -133,6 +145,7 @@ class _TorchGRUModel(nn.Module):
         else:
             self.deterministic_output = nn.Identity()
         self.rnn.cpu()
+        self.rnn_concat_obs = model.rnn_concat_obs
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -141,8 +154,7 @@ class _TorchGRUModel(nn.Module):
         rnn_out, h = self.rnn(x.unsqueeze(0), self.hidden_state)
         self.hidden_state[:] = h  # type: ignore
         rnn_out = rnn_out.squeeze(0)
-        # Keep exported behavior aligned with training path: cat([rnn_out, obs_now], -1)
-        out = self.mlp(torch.cat((rnn_out, x), dim=-1))
+        out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
         return self.deterministic_output(out)
 
     @torch.jit.export
@@ -164,6 +176,7 @@ class _TorchLSTMModel(nn.Module):
             self.deterministic_output = model.distribution.as_deterministic_output_module()
         else:
             self.deterministic_output = nn.Identity()
+        self.rnn_concat_obs = model.rnn_concat_obs
         self.register_buffer("hidden_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
         self.register_buffer("cell_state", torch.zeros(self.rnn.num_layers, 1, self.rnn.hidden_size))
 
@@ -174,8 +187,7 @@ class _TorchLSTMModel(nn.Module):
         self.hidden_state[:] = h  # type: ignore
         self.cell_state[:] = c  # type: ignore
         rnn_out = rnn_out.squeeze(0)
-        # Keep exported behavior aligned with training path: cat([rnn_out, obs_now], -1)
-        out = self.mlp(torch.cat((rnn_out, x), dim=-1))
+        out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
         return self.deterministic_output(out)
 
     @torch.jit.export
@@ -213,6 +225,7 @@ class _OnnxRNNModel(nn.Module):
         self.input_size = model.obs_dim
         self.hidden_size = self.rnn.hidden_size
         self.num_layers = self.rnn.num_layers
+        self.rnn_concat_obs = model.rnn_concat_obs
 
     def forward(
         self, obs: torch.Tensor, h_in: torch.Tensor, c_in: torch.Tensor | None = None
@@ -223,15 +236,13 @@ class _OnnxRNNModel(nn.Module):
         if self.rnn_type == "lstm":
             rnn_out, (h, c) = self.rnn(x.unsqueeze(0), (h_in, c_in))
             rnn_out = rnn_out.squeeze(0)
-            # ONNX export follows training latent: cat([rnn_out, obs_now], -1)
-            out = self.mlp(torch.cat((rnn_out, x), dim=-1))
+            out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
             out = self.deterministic_output(out)
             return out, h, c
         else:
             rnn_out, h = self.rnn(x.unsqueeze(0), h_in)
             rnn_out = rnn_out.squeeze(0)
-            # ONNX export follows training latent: cat([rnn_out, obs_now], -1)
-            out = self.mlp(torch.cat((rnn_out, x), dim=-1))
+            out = self.mlp(_combine_rnn_mlp_input(rnn_out, x, concat_obs=self.rnn_concat_obs))
             out = self.deterministic_output(out)
             return out, h, None
 

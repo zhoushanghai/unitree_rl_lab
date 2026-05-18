@@ -38,6 +38,17 @@ def _make_rnn_model(rnn_type: str = "gru", **kwargs: object) -> tuple[RNNModel, 
     return model, obs
 
 
+class TestMlpInputMode:
+    """Tests for configurable RNN-to-MLP input (hidden only vs skip connection)."""
+
+    @pytest.mark.parametrize("rnn_concat_obs, expected_in", [(True, 16 + OBS_DIM), (False, 16)])
+    def test_mlp_input_dim_matches_mode(self, rnn_concat_obs: bool, expected_in: int) -> None:
+        """MLP first-layer input dim should follow rnn_concat_obs."""
+        model, _ = _make_rnn_model(rnn_concat_obs=rnn_concat_obs)
+        assert model.rnn_concat_obs == rnn_concat_obs
+        assert model.mlp[0].in_features == expected_in
+
+
 class TestHiddenStateReset:
     """Tests for hidden state reset behavior on done environments."""
 
