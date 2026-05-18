@@ -180,6 +180,10 @@ play
 ```
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
   --num_envs 1 \
+  --apf_collision_grid_vis \
+  --apf_collision_grid_radius_m 1.0 \
+  --apf_collision_grid_cell_m 0.05 \
+  --apf_collision_grid_env_id 0 \
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_10-47-59_gru-5his-contact/model_4500.pt
 ```
 

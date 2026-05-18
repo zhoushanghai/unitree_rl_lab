@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import importlib
 from importlib.metadata import version
 
 from isaaclab.app import AppLauncher
@@ -30,6 +31,42 @@ parser.add_argument(
     help="Use the pre-trained checkpoint from Nucleus.",
 )
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
+parser.add_argument(
+    "--export_policy",
+    action="store_true",
+    default=False,
+    help="Export policy to JIT/ONNX during play (disabled by default to keep logs clean).",
+)
+parser.add_argument(
+    "--apf_collision_grid_vis",
+    action="store_true",
+    default=False,
+    help="Open matplotlib APF collision grid debug panel.",
+)
+parser.add_argument(
+    "--apf_collision_grid_radius_m",
+    type=float,
+    default=1.0,
+    help="Circular local map radius in meters.",
+)
+parser.add_argument(
+    "--apf_collision_grid_cell_m",
+    type=float,
+    default=0.05,
+    help="Grid cell size in meters (r=1.0, cell=0.05 => ~40x40).",
+)
+parser.add_argument(
+    "--apf_collision_grid_env_id",
+    type=int,
+    default=0,
+    help="Parallel env index to visualize.",
+)
+parser.add_argument(
+    "--apf_collision_grid_every",
+    type=int,
+    default=1,
+    help="Refresh panel every N simulation steps.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -120,6 +157,23 @@ def main():
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    # 可选：APF 局部碰撞栅格调试面板（matplotlib）
+    apf_grid_vis = None
+    if args_cli.apf_collision_grid_vis:
+        try:
+            # 仅使用本仓库内的 APF 面板实现（已复制 proprioception 原版代码）。
+            panel_mod = importlib.import_module("unitree_rl_lab.tasks.locomotion.robots.g1.29dof.apf_collision_grid_vis")
+            ApfPlayDebugPanel = getattr(panel_mod, "ApfPlayDebugPanel")
+            apf_grid_vis = ApfPlayDebugPanel(
+                radius_m=args_cli.apf_collision_grid_radius_m,
+                cell_m=args_cli.apf_collision_grid_cell_m,
+                env_id=args_cli.apf_collision_grid_env_id,
+                update_every=args_cli.apf_collision_grid_every,
+            )
+            print("[INFO] APF collision grid panel enabled. Close the figure window to hide it.")
+        except Exception as e:
+            print(f"[WARNING] APF collision grid panel could not start: {e}")
+
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     if not hasattr(agent_cfg, "class_name") or agent_cfg.class_name == "OnPolicyRunner":
@@ -160,14 +214,16 @@ def main():
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # 导出策略（优先使用当前 rsl_rl runner 自带导出接口，避免跨版本 exporter 字段不兼容）。
-    export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    try:
-        runner.export_policy_to_jit(export_model_dir, filename="policy.pt")
-        runner.export_policy_to_onnx(export_model_dir, filename="policy.onnx")
-    except Exception as export_err:
-        # 导出失败不应阻断播放主流程；打印告警便于后续单独排查导出兼容性。
-        print(f"[WARN] Policy export skipped due to compatibility error: {export_err}")
+    # 默认不导出策略，避免 play 过程中出现 ONNX/GRU 相关告警干扰观察。
+    # 如确需导出，可显式传入 --export_policy。
+    if args_cli.export_policy:
+        export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
+        try:
+            runner.export_policy_to_jit(export_model_dir, filename="policy.pt")
+            runner.export_policy_to_onnx(export_model_dir, filename="policy.onnx")
+        except Exception as export_err:
+            # 导出失败不应阻断播放主流程；打印告警便于后续单独排查导出兼容性。
+            print(f"[WARN] Policy export skipped due to compatibility error: {export_err}")
 
     dt = env.unwrapped.step_dt
 
@@ -185,6 +241,8 @@ def main():
             actions = policy(obs)
             # env stepping
             obs, _, _, _ = env.step(actions)
+            if apf_grid_vis is not None:
+                apf_grid_vis.step(env)
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
@@ -197,6 +255,8 @@ def main():
             time.sleep(sleep_time)
 
     # close the simulator
+    if apf_grid_vis is not None:
+        apf_grid_vis.close()
     env.close()
 
 

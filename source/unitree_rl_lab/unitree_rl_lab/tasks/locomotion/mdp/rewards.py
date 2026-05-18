@@ -19,6 +19,18 @@ Joint penalties.
 """
 
 
+def _get_command_for_reward(env: ManagerBasedRLEnv, command_name: str, use_apf_command: bool) -> torch.Tensor:
+    """统一读取 reward 用命令。
+
+    - use_apf_command=False: 使用采样器原始命令（默认行为）。
+    - use_apf_command=True : 优先使用 APF 后命令缓存 `_apf_v_out_b`；
+      若缓存尚未建立则回退到原始命令，保证首步稳定。
+    """
+    if use_apf_command and hasattr(env, "_apf_v_out_b") and env._apf_v_out_b.shape[0] == env.num_envs:
+        return env._apf_v_out_b
+    return env.command_manager.get_command(command_name)
+
+
 def energy(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
     """Penalize the energy used by the robot's joints."""
     asset: Articulation = env.scene[asset_cfg.name]
@@ -36,6 +48,34 @@ def stand_still(
     reward = torch.sum(torch.abs(asset.data.joint_pos - asset.data.default_joint_pos), dim=1)
     cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
     return reward * (cmd_norm < 0.1)
+
+
+def track_lin_vel_xy_yaw_frame_exp_apf(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    use_apf_command: bool = True,
+) -> torch.Tensor:
+    """线速度跟踪奖励（exp），可切换到 APF 后命令作为目标速度。"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=use_apf_command)
+    lin_vel_error = torch.sum(torch.square(cmd[:, :2] - asset.data.root_lin_vel_b[:, :2]), dim=1)
+    return torch.exp(-lin_vel_error / (std * std))
+
+
+def track_ang_vel_z_exp_apf(
+    env: ManagerBasedRLEnv,
+    std: float,
+    command_name: str = "base_velocity",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    use_apf_command: bool = True,
+) -> torch.Tensor:
+    """角速度 z 跟踪奖励（exp），可切换到 APF 后命令作为目标速度。"""
+    asset: RigidObject = env.scene[asset_cfg.name]
+    cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=use_apf_command)
+    ang_vel_error = torch.square(cmd[:, 2] - asset.data.root_ang_vel_b[:, 2])
+    return torch.exp(-ang_vel_error / (std * std))
 
 
 """
@@ -178,6 +218,7 @@ def feet_gait(
     sensor_cfg: SceneEntityCfg,
     threshold: float = 0.5,
     command_name=None,
+    use_apf_command: bool = False,
 ) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     is_contact = contact_sensor.data.current_contact_time[:, sensor_cfg.body_ids] > 0
@@ -195,7 +236,8 @@ def feet_gait(
         reward += ~(is_stance ^ is_contact[:, i])
 
     if command_name is not None:
-        cmd_norm = torch.norm(env.command_manager.get_command(command_name), dim=1)
+        cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=use_apf_command)
+        cmd_norm = torch.norm(cmd, dim=1)
         reward *= cmd_norm > 0.1
     return reward
 

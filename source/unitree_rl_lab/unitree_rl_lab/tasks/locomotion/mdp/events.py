@@ -149,6 +149,10 @@ def reset_obstacle_collision_point_cache(
         env._obstacle_collision_points_w = torch.zeros((num_envs, max_points, 3), dtype=torch.float32, device=device)
         env._obstacle_collision_slot_valid = torch.zeros((num_envs, max_points), dtype=torch.bool, device=device)
 
+    # 与 proprioception 可视化面板字段对齐（别名引用同一底层张量，不引入额外拷贝）。
+    env.apf_points_w = env._obstacle_collision_points_w
+    env.apf_slot_valid = env._obstacle_collision_slot_valid
+
     # 仅清理本次 reset 的 env，避免误改其他仍在运行的 env 状态。
     env._obstacle_collision_points_w[env_ids] = 0.0
     env._obstacle_collision_slot_valid[env_ids] = False
@@ -299,6 +303,11 @@ def reset_apf_velocity_state(
     env._apf_delta_v_b[env_ids] = 0.0
     env._apf_v_out_b[env_ids] = 0.0
 
+    # 与 proprioception 可视化面板字段对齐（别名引用同一底层张量）。
+    env.apf_v_cmd_b = env._apf_v_cmd_b
+    env.apf_delta_v_b = env._apf_delta_v_b
+    env.apf_v_out_b = env._apf_v_out_b
+
 
 def apply_apf_to_velocity_command(
     env,
@@ -314,13 +323,17 @@ def apply_apf_to_velocity_command(
     no_contact_delta_mode: str = "zero",
     no_contact_delta_decay_factor: float = 0.5,
 ):
-    """将 APF 排斥速度叠加到当前采样速度命令上（仅改 vx, vy，保持 wz 不变）。
+    """计算 APF 修正速度（仅改 vx, vy，保持 wz 不变），但不覆盖原始命令。
 
     数据流：
     1) 读取现有速度采样器输出 v_cmd（base 系）
     2) 从碰撞点缓存计算世界系排斥速度 Δv_w
     3) 对 Δv_w 做 EMA 平滑，抑制离散碰撞导致的抖动
     4) 旋转到 base 系后与 v_cmd 相加，最后做平面模长限幅
+
+    关键语义：
+    - 原始命令 `term.vel_command_b` 保持不变（供策略输入保持“旧 cmd”语义）。
+    - APF 后命令单独缓存到 `env._apf_v_out_b`（供 reward / 可视化读取）。
     """
     if (not hasattr(env, "_obstacle_collision_points_w")) or (not hasattr(env, "_obstacle_collision_slot_valid")):
         return
@@ -402,11 +415,11 @@ def apply_apf_to_velocity_command(
         else:
             env._apf_delta_v_w[env_ids_no_contact] = 0.0
 
-    # 回写命令（策略看到的 velocity_commands 即为 APF 修正后的速度）。
-    cmd[active_env_ids, 0:2] = v_out_xy
-    cmd[active_env_ids, 2] = wz
+    # 注意：这里不回写 cmd，保持采样器原始命令不变。
+    # APF 后速度只写入缓存，避免“旧 cmd 被覆盖”。
 
-    # 调试缓存：记录“原命令/增量/输出命令”，便于后续可视化。
+    # 调试/业务缓存：记录“原命令/增量/输出命令”，
+    # 后续 reward 与可视化统一从这里读取 APF 后命令。
     env._apf_v_cmd_b[active_env_ids, :2] = v_cmd_xy
     env._apf_v_cmd_b[active_env_ids, 2] = wz
     env._apf_delta_v_b[active_env_ids] = delta_v_b

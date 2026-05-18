@@ -253,9 +253,9 @@ class EventCfg:
         mode="reset",
         params={},
     )
-    # interval 同步执行 APF 命令修正：
+    # interval 同步执行 APF 命令计算：
     # - 输入：当前 sampled velocity command + 碰撞点缓存
-    # - 输出：APF 修正后的 velocity command（vx,vy 被改写，wz 保持采样值）
+    # - 输出：APF 修正后的速度缓存（不覆盖原始采样命令）
     apply_apf_to_base_velocity = EventTerm(
         func=mdp.apply_apf_to_velocity_command,
         mode="interval",
@@ -374,12 +374,15 @@ class RewardsCfg:
 
     # -- task
     track_lin_vel_xy = RewTerm(
-        func=mdp.track_lin_vel_xy_yaw_frame_exp,
+        # 关键点：reward 跟踪 APF 后目标速度；原始命令保持不变给模型观测使用。
+        func=mdp.track_lin_vel_xy_yaw_frame_exp_apf,
         weight=1.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25)},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
     )
     track_ang_vel_z = RewTerm(
-        func=mdp.track_ang_vel_z_exp, weight=0.5, params={"command_name": "base_velocity", "std": math.sqrt(0.25)}
+        func=mdp.track_ang_vel_z_exp_apf,
+        weight=0.5,
+        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
     )
 
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
@@ -438,6 +441,7 @@ class RewardsCfg:
             "offset": [0.0, 0.5],
             "threshold": 0.55,
             "command_name": "base_velocity",
+            "use_apf_command": True,
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=".*ankle_roll.*"),
         },
     )
@@ -548,10 +552,17 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 class RobotPlayEnvCfg(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
-        self.scene.num_envs = 32
+        # Play 默认单环境，避免开局相机落在多环境阵列中导致“看不到机器人”。
+        self.scene.num_envs = 1
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 10
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        # 关闭 command debug 可视化，避免 /Visuals/Command/* 的 point instancer 告警刷屏。
+        self.commands.base_velocity.debug_vis = False
+        # Play 默认视角：固定看向 env_0 附近机器人，避免启动时看不到主体。
+        # eye/lookat 均为世界坐标；该设置只影响可视化，不影响训练/控制逻辑。
+        self.viewer.eye = (3.0, 3.0, 2.0)
+        self.viewer.lookat = (0.0, 0.0, 0.8)
 
 
 @configclass
