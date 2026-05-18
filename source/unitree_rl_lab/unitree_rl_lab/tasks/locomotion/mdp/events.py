@@ -58,15 +58,17 @@ def spawn_obstacle_forward_once(
     env,
     env_ids: torch.Tensor,
     forward_offset_m: float = 0.8,
+    min_speed_for_velocity_dir: float = 0.05,
     obstacle_half_height_m: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("obstacle"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
-    """到点后仅一次：将障碍物瞬移到机身“水平 +x”前方。
+    """到点后仅一次：将障碍物瞬移到“当前速度方向”前方。
 
     关键约束：
     - 触发条件：episode_elapsed_time >= sampled_spawn_time
-    - 位置规则：机身水平前方 forward_offset_m（默认 0.8m）
+    - 位置规则：速度方向前方 forward_offset_m（默认 0.8m）
+    - 回退策略：当平面速度过小（< min_speed_for_velocity_dir）时，回退到机身水平前向
     - 每个 episode 每个 env 只触发一次
     """
     if (not hasattr(env, "_obstacle_spawned")) or (not hasattr(env, "_obstacle_spawn_time_s")):
@@ -89,22 +91,30 @@ def spawn_obstacle_forward_once(
     obstacle: RigidObject = env.scene[asset_cfg.name]
     robot: Articulation = env.scene[robot_cfg.name]
 
-    # 从机器人根姿态四元数提取“世界系前向向量”的 XY 分量，并归一化。
-    # 注意这里取的是“水平面前向”，故只用 XY，不使用 pitch/roll 的垂向影响。
+    # 1) 优先使用“世界系平面速度方向”作为障碍放置方向。
+    #    这么做可以让障碍更贴近“机器人当前运动方向前方”。
+    vel_xy = robot.data.root_lin_vel_w[spawn_env_ids, :2]
+    vel_xy_norm = torch.linalg.norm(vel_xy, dim=-1, keepdim=True)
+    vel_dir_xy = vel_xy / vel_xy_norm.clamp(min=1.0e-6)
+
+    # 2) 当速度太小（起步、停滞、瞬时抖动）时，速度方向不稳定，
+    #    回退到“机身水平前向”，避免障碍随机跳向侧方。
     quat_w = robot.data.root_quat_w[spawn_env_ids]  # (w, x, y, z)
     qw, qx, qy, qz = quat_w.unbind(dim=-1)
     fwd_x = 1.0 - 2.0 * (qy * qy + qz * qz)
     fwd_y = 2.0 * (qx * qy + qw * qz)
-    fwd_xy = torch.stack((fwd_x, fwd_y), dim=-1)
-    fwd_xy = fwd_xy / torch.linalg.norm(fwd_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
+    fwd_dir_xy = torch.stack((fwd_x, fwd_y), dim=-1)
+    fwd_dir_xy = fwd_dir_xy / torch.linalg.norm(fwd_dir_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
+    use_vel_dir = vel_xy_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
+    dir_xy = torch.where(use_vel_dir.unsqueeze(-1), vel_dir_xy, fwd_dir_xy)
 
     # 障碍瞬移目标位姿：
-    # - XY: 机器人根位置 + 前向单位向量 * forward_offset_m
+    # - XY: 机器人根位置 + 选定方向单位向量 * forward_offset_m
     # - Z : 贴地放置（env 地面高度 + 障碍半高）
     # - 姿态: 单位四元数
     # - 速度: 清零，避免瞬移遗留速度造成额外动力学扰动
     root_state = obstacle.data.default_root_state[spawn_env_ids].clone()
-    root_state[:, 0:2] = robot.data.root_pos_w[spawn_env_ids, 0:2] + forward_offset_m * fwd_xy
+    root_state[:, 0:2] = robot.data.root_pos_w[spawn_env_ids, 0:2] + forward_offset_m * dir_xy
     root_state[:, 2] = env.scene.env_origins[spawn_env_ids, 2] + obstacle_half_height_m
     root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device).repeat(len(spawn_env_ids), 1)
     root_state[:, 7:13] = 0.0
