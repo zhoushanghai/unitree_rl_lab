@@ -330,6 +330,11 @@ class ObservationsCfg:
         # 关键：模型输入使用 APF 修正前的原始采样命令（旧 cmd），
         # 与控制执行/奖励所使用的新 cmd（APF 后）解耦。
         velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
+        # 同时将碰撞点槽位输入给 Actor：每槽 (x_b, y_b, valid)，用于策略直接感知局部碰撞几何。
+        obstacle_collision_slots = ObsTerm(
+            func=mdp.obstacle_collision_slots_base_xy,
+            params={"max_points": 10},
+        )
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
         last_action = ObsTerm(func=mdp.last_action)
@@ -352,8 +357,7 @@ class ObservationsCfg:
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
         # Critic 同样对齐“输入模型看旧 cmd”的约定，避免 actor/critic 命令语义不一致。
         velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
-        # 特权信息：仅给 Critic 的碰撞点槽位观测（机体系 x/y + valid）。
-        # 说明：Policy 不接此项，保持“模型输入旧 cmd + 本体观测”，把碰撞几何信息交由 Critic 辅助学习。
+        # 与 Actor 保持一致：Critic 也输入同一份碰撞点槽位，稳定 AC 观测语义。
         obstacle_collision_slots = ObsTerm(
             func=mdp.obstacle_collision_slots_base_xy,
             params={"max_points": 10},

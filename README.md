@@ -161,7 +161,7 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name GRU \
-  --run_name obs_new \
+  --run_name collision-point  \
   --video --video_length 300 --video_interval 50000 \
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_14-12-31_obs/model_500.pt
 ```
