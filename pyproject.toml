@@ -51,7 +51,6 @@ known_isaaclabparty = [
     "isaaclab",
     "isaaclab_tasks",
     "isaaclab_assets",
-    "isaaclab_mimic",
     "isaaclab_rl"
 ]
 
