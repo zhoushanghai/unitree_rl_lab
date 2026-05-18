@@ -21,6 +21,22 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
 
+
+@configclass
+class ApfCfg:
+    """APF 参数配置（用于速度命令修正）。"""
+
+    # 势场窗口参数
+    R: float = 1.0  # 势场生效半径（m）
+    rho: float = 0.2  # 近区偏移（m），d<=rho 时权重保持高值
+    beta: float = 2.0  # 权重衰减指数
+    k: float = 1.0  # 排斥强度系数
+    alpha: float = 0.8  # EMA 平滑系数
+
+    # 合成后平面速度模长上限（m/s）
+    lin_vel_xy_max: float = 1.0
+
+
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
     border_width=20.0,
@@ -224,6 +240,30 @@ class EventCfg:
             "keep_radius_m": 1.0,
         },
     )
+    # reset 时清空 APF 内部状态（EMA 缓存 + 调试变量）。
+    reset_apf_state = EventTerm(
+        func=mdp.reset_apf_velocity_state,
+        mode="reset",
+        params={},
+    )
+    # interval 同步执行 APF 命令修正：
+    # - 输入：当前 sampled velocity command + 碰撞点缓存
+    # - 输出：APF 修正后的 velocity command（vx,vy 被改写，wz 保持采样值）
+    apply_apf_to_base_velocity = EventTerm(
+        func=mdp.apply_apf_to_velocity_command,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "command_name": "base_velocity",
+            "robot_cfg": SceneEntityCfg("robot"),
+            "k": 1.0,
+            "R": 1.0,
+            "rho": 0.2,
+            "beta": 2.0,
+            "alpha": 0.5,
+            "lin_vel_xy_max": 1.0,
+        },
+    )
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
@@ -272,7 +312,9 @@ class ObservationsCfg:
         # observation terms (order preserved)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        # 关键：模型输入使用 APF 修正前的原始采样命令（旧 cmd），
+        # 与控制执行/奖励所使用的新 cmd（APF 后）解耦。
+        velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
         last_action = ObsTerm(func=mdp.last_action)
@@ -293,7 +335,8 @@ class ObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.2)
         projected_gravity = ObsTerm(func=mdp.projected_gravity)
-        velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity"})
+        # Critic 同样对齐“输入模型看旧 cmd”的约定，避免 actor/critic 命令语义不一致。
+        velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
         last_action = ObsTerm(func=mdp.last_action)
@@ -440,6 +483,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     commands: CommandsCfg = CommandsCfg()
+    apf: ApfCfg = ApfCfg()
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
@@ -462,6 +506,14 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.scene.contact_forces.update_period = self.sim.dt
         self.scene.obstacle_contact_forces.update_period = self.sim.dt
         self.scene.height_scanner.update_period = self.decimation * self.sim.dt
+
+        # 将 APF 配置同步到事件参数，避免一处改参数另一处遗漏。
+        self.events.apply_apf_to_base_velocity.params["k"] = self.apf.k
+        self.events.apply_apf_to_base_velocity.params["R"] = self.apf.R
+        self.events.apply_apf_to_base_velocity.params["rho"] = self.apf.rho
+        self.events.apply_apf_to_base_velocity.params["beta"] = self.apf.beta
+        self.events.apply_apf_to_base_velocity.params["alpha"] = self.apf.alpha
+        self.events.apply_apf_to_base_velocity.params["lin_vel_xy_max"] = self.apf.lin_vel_xy_max
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training

@@ -259,3 +259,121 @@ def update_obstacle_collision_point_cache(
     points_w[active_env_ids] = points_w[active_env_ids][batch, order]
     valid[active_env_ids] = valid[active_env_ids][batch, order]
     points_w[active_env_ids] = points_w[active_env_ids].masked_fill(~valid[active_env_ids].unsqueeze(-1), 0.0)
+
+
+def reset_apf_velocity_state(
+    env,
+    env_ids: torch.Tensor,
+):
+    """reset 时清空 APF 速度状态（EMA 内部状态 + 调试缓存）。
+
+    说明：
+    - APF 采用 EMA 平滑排斥速度，故必须在每个 episode 的 reset 将内部状态归零。
+    - 这里不改命令采样器本身，只清 APF 的附加量，避免跨 episode 残留。
+    """
+    if env_ids.numel() == 0:
+        return
+
+    device = env.device
+    num_envs = env.num_envs
+
+    # _apf_delta_v_w: 世界系排斥速度的 EMA 状态，形状 (num_envs, 2)
+    if not hasattr(env, "_apf_delta_v_w"):
+        env._apf_delta_v_w = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
+    env._apf_delta_v_w[env_ids] = 0.0
+
+    # 调试缓存：便于后续可视化/日志检查（不参与控制闭环计算）。
+    if not hasattr(env, "_apf_v_cmd_b"):
+        env._apf_v_cmd_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
+    if not hasattr(env, "_apf_delta_v_b"):
+        env._apf_delta_v_b = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
+    if not hasattr(env, "_apf_v_out_b"):
+        env._apf_v_out_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
+    env._apf_v_cmd_b[env_ids] = 0.0
+    env._apf_delta_v_b[env_ids] = 0.0
+    env._apf_v_out_b[env_ids] = 0.0
+
+
+def apply_apf_to_velocity_command(
+    env,
+    env_ids: torch.Tensor | None = None,
+    command_name: str = "base_velocity",
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    k: float = 1.0,
+    R: float = 1.0,
+    rho: float = 0.2,
+    beta: float = 2.0,
+    alpha: float = 0.5,
+    lin_vel_xy_max: float = 1.0,
+):
+    """将 APF 排斥速度叠加到当前采样速度命令上（仅改 vx, vy，保持 wz 不变）。
+
+    数据流：
+    1) 读取现有速度采样器输出 v_cmd（base 系）
+    2) 从碰撞点缓存计算世界系排斥速度 Δv_w
+    3) 对 Δv_w 做 EMA 平滑，抑制离散碰撞导致的抖动
+    4) 旋转到 base 系后与 v_cmd 相加，最后做平面模长限幅
+    """
+    if (not hasattr(env, "_obstacle_collision_points_w")) or (not hasattr(env, "_obstacle_collision_slot_valid")):
+        return
+
+    active_env_ids: torch.Tensor = (
+        torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids
+    )
+    if active_env_ids.numel() == 0:
+        return
+
+    # 若 reset 事件顺序被改动导致 APF 状态不存在，这里兜底初始化一次。
+    reset_apf_velocity_state(env=env, env_ids=active_env_ids)
+
+    robot: Articulation = env.scene[robot_cfg.name]
+    points_w = env._obstacle_collision_points_w
+    valid = env._obstacle_collision_slot_valid
+
+    # 当前采样命令（来自 UniformLevelVelocityCommand），APF 在其基础上做“增量修正”。
+    term = env.command_manager.get_term(command_name)
+    cmd = term.vel_command_b
+    v_cmd_xy = cmd[active_env_ids, :2]
+    wz = cmd[active_env_ids, 2]
+
+    # 机器人到障碍点的相对向量：r = p_robot - p_obstacle（世界系，XY）
+    robot_xy = robot.data.root_pos_w[active_env_ids, :2]
+    r_vec = robot_xy.unsqueeze(1) - points_w[active_env_ids, :, :2]
+    d_i = torch.linalg.norm(r_vec, dim=-1)
+
+    # 单位排斥方向；当 d_i 很小时用 eps 防止除零。
+    r_hat = r_vec / (d_i.unsqueeze(-1) + 1.0e-6)
+
+    # APF 距离权重窗：d<=rho 近区权重大，超过窗口后衰减到 0。
+    w_d = torch.clamp(1.0 - torch.clamp(d_i - rho, min=0.0) / R, min=0.0) ** beta
+    w_d = w_d * valid[active_env_ids].float()
+
+    # 世界系排斥速度合成：Δv_w = Σ(k * w_d * r_hat)
+    delta_v_w_current = torch.sum(k * w_d.unsqueeze(-1) * r_hat, dim=1)
+
+    # EMA 平滑（保留低频趋势，削弱碰撞瞬时尖峰）。
+    env._apf_delta_v_w[active_env_ids] = alpha * env._apf_delta_v_w[active_env_ids] + (1.0 - alpha) * delta_v_w_current
+
+    # 世界系 -> base 系（只用 yaw 旋转，保持平面控制语义）。
+    yaw = robot.data.heading_w[active_env_ids]
+    cos_y = torch.cos(-yaw)
+    sin_y = torch.sin(-yaw)
+    delta_vx_b = cos_y * env._apf_delta_v_w[active_env_ids, 0] - sin_y * env._apf_delta_v_w[active_env_ids, 1]
+    delta_vy_b = sin_y * env._apf_delta_v_w[active_env_ids, 0] + cos_y * env._apf_delta_v_w[active_env_ids, 1]
+    delta_v_b = torch.stack((delta_vx_b, delta_vy_b), dim=-1)
+
+    # 合成后只做“平面模长”限幅，尽量不破坏方向。
+    v_raw_xy = v_cmd_xy + delta_v_b
+    speed = torch.linalg.norm(v_raw_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
+    v_out_xy = v_raw_xy * torch.clamp(lin_vel_xy_max / speed, max=1.0)
+
+    # 回写命令（策略看到的 velocity_commands 即为 APF 修正后的速度）。
+    cmd[active_env_ids, 0:2] = v_out_xy
+    cmd[active_env_ids, 2] = wz
+
+    # 调试缓存：记录“原命令/增量/输出命令”，便于后续可视化。
+    env._apf_v_cmd_b[active_env_ids, :2] = v_cmd_xy
+    env._apf_v_cmd_b[active_env_ids, 2] = wz
+    env._apf_delta_v_b[active_env_ids] = delta_v_b
+    env._apf_v_out_b[active_env_ids, :2] = v_out_xy
+    env._apf_v_out_b[active_env_ids, 2] = wz
