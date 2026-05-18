@@ -61,8 +61,6 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 from isaaclab_rl.rsl_rl import (
     RslRlOnPolicyRunnerCfg,
     RslRlVecEnvWrapper,
-    export_policy_as_jit,
-    export_policy_as_onnx,
     handle_deprecated_rsl_rl_cfg,
 )
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -132,32 +130,44 @@ def main():
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    runner.load(resume_path)
+    # 先尝试完整加载；若遇到 critic 结构不匹配（常见于增加/移除 privileged obs 后），
+    # 自动降级为“仅加载 actor”以支持旧 checkpoint 的推理播放。
+    try:
+        runner.load(resume_path)
+    except RuntimeError as err:
+        err_text = str(err)
+        critic_mismatch = (
+            "Error(s) in loading state_dict for MLPModel" in err_text
+            and "size mismatch" in err_text
+            and ("critic" in err_text.lower() or "mlp.0.weight" in err_text)
+        )
+        if not critic_mismatch:
+            raise
+        print("[WARN] Critic state_dict shape mismatch detected. Falling back to actor-only checkpoint loading for play.")
+        runner.load(
+            resume_path,
+            load_cfg={
+                "actor": True,
+                "critic": False,
+                "optimizer": False,
+                "iteration": False,
+                "rnd": False,
+            },
+            strict=False,
+            map_location=agent_cfg.device,
+        )
 
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
-    try:
-        # version 2.3 onwards
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
-
-    # extract the normalizer
-    if hasattr(policy_nn, "actor_obs_normalizer"):
-        normalizer = policy_nn.actor_obs_normalizer
-    elif hasattr(policy_nn, "student_obs_normalizer"):
-        normalizer = policy_nn.student_obs_normalizer
-    else:
-        normalizer = None
-
-    # export policy to onnx/jit
+    # 导出策略（优先使用当前 rsl_rl runner 自带导出接口，避免跨版本 exporter 字段不兼容）。
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    try:
+        runner.export_policy_to_jit(export_model_dir, filename="policy.pt")
+        runner.export_policy_to_onnx(export_model_dir, filename="policy.onnx")
+    except Exception as export_err:
+        # 导出失败不应阻断播放主流程；打印告警便于后续单独排查导出兼容性。
+        print(f"[WARN] Policy export skipped due to compatibility error: {export_err}")
 
     dt = env.unwrapped.step_dt
 

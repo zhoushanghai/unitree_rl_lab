@@ -180,7 +180,7 @@ play
 ```
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
   --num_envs 1 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_10-47-59_gru-5his-contact/model_2000.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_10-47-59_gru-5his-contact/model_4500.pt
 ```
 
 
