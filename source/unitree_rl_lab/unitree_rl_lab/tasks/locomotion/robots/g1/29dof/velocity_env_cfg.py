@@ -219,7 +219,8 @@ class EventCfg:
     # interval 阶段高频轮询（50Hz，与控制频率 step_dt=0.02s 对齐）：
     # - 每个“速度命令刷新周期”开始时重采样一次障碍触发延时；
     # - 当某 env 在该周期内到达采样触发时刻后，执行一次瞬移；
-    # - 瞬移目标优先取“当前平面速度方向前方 0.8m”，低速时回退到机身前向；
+    # - 瞬移目标优先取“当前平面速度方向前方 0.8m + 左右随机偏移”；
+    # - 低速时回退到机身前向，侧向偏移仍生效；
     # - 事件函数内部打标记，保证“每周期每 env 只触发一次”。
     spawn_obstacle_forward_once = EventTerm(
         func=mdp.spawn_obstacle_forward_once,
@@ -227,6 +228,7 @@ class EventCfg:
         interval_range_s=(0.02, 0.02),
         params={
             "forward_offset_m": 0.8,
+            "lateral_offset_range_m": (-0.2, 0.2),
             "min_speed_for_velocity_dir": 0.05,
             "obstacle_half_height_m": 0.5,
             "delay_range_s": (1.0, 4.0),
@@ -246,7 +248,7 @@ class EventCfg:
             "sensor_cfg": SceneEntityCfg("obstacle_contact_forces"),
             "robot_cfg": SceneEntityCfg("robot"),
             "max_points": 10,
-            "force_threshold": 0.3,
+            "force_threshold": 1.0,
             "merge_distance_m": 0.05,
             "keep_radius_m": 1.0,
         },

@@ -62,6 +62,7 @@ def spawn_obstacle_forward_once(
     env,
     env_ids: torch.Tensor,
     forward_offset_m: float = 0.8,
+    lateral_offset_range_m: tuple[float, float] = (-0.2, 0.2),
     min_speed_for_velocity_dir: float = 0.05,
     obstacle_half_height_m: float = 0.5,
     delay_range_s: tuple[float, float] = (1.0, 4.0),
@@ -74,7 +75,7 @@ def spawn_obstacle_forward_once(
 
     关键约束：
     - 触发条件：每个“速度命令刷新周期”内，elapsed_in_cycle >= sampled_spawn_time
-    - 位置规则：速度方向前方 forward_offset_m（默认 0.8m）
+    - 位置规则：速度方向前方 forward_offset_m + 左右随机偏移 lateral_offset_range_m
     - 回退策略：当平面速度过小（< min_speed_for_velocity_dir）时，回退到机身水平前向
     - 刷新策略：每个周期每个 env 只触发一次；新周期自动重采样触发时刻并重置障碍
     """
@@ -144,13 +145,26 @@ def spawn_obstacle_forward_once(
     use_vel_dir = vel_xy_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
     dir_xy = torch.where(use_vel_dir.unsqueeze(-1), vel_dir_xy, fwd_dir_xy)
 
+    # 侧向单位向量（与 forward 正交，右手系平面内逆时针 +90°）：
+    # - forward = [fx, fy]
+    # - lateral = [-fy, fx]
+    # 这样可在“前方”基础上叠加左右偏移，让障碍不只出现在正前方一条线上。
+    lat_dir_xy = torch.stack((-dir_xy[:, 1], dir_xy[:, 0]), dim=-1)
+    lat_dir_xy = lat_dir_xy / torch.linalg.norm(lat_dir_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
+    lat_min, lat_max = float(lateral_offset_range_m[0]), float(lateral_offset_range_m[1])
+    lat_offset = torch.empty(len(spawn_env_ids), device=env.device).uniform_(lat_min, lat_max)
+
     # 障碍瞬移目标位姿：
-    # - XY: 机器人根位置 + 选定方向单位向量 * forward_offset_m
+    # - XY: root + 前向偏移 + 侧向随机偏移
     # - Z : 贴地放置（env 地面高度 + 障碍半高）
     # - 姿态: 单位四元数
     # - 速度: 清零，避免瞬移遗留速度造成额外动力学扰动
     root_state = obstacle.data.default_root_state[spawn_env_ids].clone()
-    root_state[:, 0:2] = robot.data.root_pos_w[spawn_env_ids, 0:2] + forward_offset_m * dir_xy
+    root_state[:, 0:2] = (
+        robot.data.root_pos_w[spawn_env_ids, 0:2]
+        + forward_offset_m * dir_xy
+        + lat_offset.unsqueeze(-1) * lat_dir_xy
+    )
     root_state[:, 2] = env.scene.env_origins[spawn_env_ids, 2] + obstacle_half_height_m
     root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device).repeat(len(spawn_env_ids), 1)
     root_state[:, 7:13] = 0.0
