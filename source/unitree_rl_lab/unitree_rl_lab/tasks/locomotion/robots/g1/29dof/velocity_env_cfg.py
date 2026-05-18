@@ -201,7 +201,7 @@ class EventCfg:
         func=mdp.reset_obstacle_spawn_timer_and_stash,
         mode="reset",
         params={
-            "delay_range_s": (1.0, 8.0),
+            "delay_range_s": (1.0, 4.0),
             "asset_cfg": SceneEntityCfg("obstacle"),
             "stash_z_offset_m": -5.0,
         },
