@@ -232,10 +232,23 @@ class ApfPlayDebugPanel:
         )
         self._ax_map.add_patch(self._ring)
 
+        # 圆内浅灰网格线（真实 cell 边界），用于稳定显示局部栅格地图结构。
+        # 只在初始化时绘制一次，后续无需逐帧更新。
+        grid_edges = np.arange(-r, r + self.cell_m * 0.51, self.cell_m, dtype=np.float64)
+        v_coll = cast(Any, self._ax_map.vlines(
+            grid_edges, ymin=-r, ymax=r, colors="#c9d1d9", linewidth=0.35, alpha=0.26, zorder=1.05
+        ))
+        h_coll = cast(Any, self._ax_map.hlines(
+            grid_edges, xmin=-r, xmax=r, colors="#c9d1d9", linewidth=0.35, alpha=0.26, zorder=1.05
+        ))
+        v_coll.set_clip_path(self._clip_circle)
+        h_coll.set_clip_path(self._clip_circle)
+
         heat_cmap = mcolors.LinearSegmentedColormap.from_list(
             "apf_heat", ["#161b22", "#1f3a5f", "#388bfd", "#a371f7"], N=64
         )
-        heat_cmap.set_bad(color=self._BG, alpha=1.0)
+        # 关键：未激活栅格（masked）必须透明，否则会把底层浅灰网格线完全盖住。
+        heat_cmap.set_bad(color=self._BG, alpha=0.0)
         z0 = np.ma.masked_where(~self._circ_mask_np, np.zeros((self.n, self.n)))
         self._im = self._ax_map.imshow(
             z0,
@@ -602,7 +615,8 @@ class ApfPlayDebugPanel:
         z_np = z.detach().cpu().numpy()
         z_plot = _grid_body_to_plot(z_np)
         mask_plot = _grid_body_to_plot(self._circ_mask_np.astype(np.float32)) > 0.5
-        self._im.set_data(np.ma.masked_where(~mask_plot, z_plot))
+        # 仅渲染“激活栅格”（>0），未激活格子由底层浅灰方格呈现。
+        self._im.set_data(np.ma.masked_where((~mask_plot) | (z_plot <= 0.0), z_plot))
 
         if pts_xy.numel() == 0:
             self._scatter_pts.set_data([], [])
