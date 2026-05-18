@@ -32,9 +32,13 @@ def reset_obstacle_spawn_timer_and_stash(
         env._obstacle_spawned = torch.zeros(num_envs, dtype=torch.bool, device=device)
     if not hasattr(env, "_obstacle_spawn_time_s"):
         env._obstacle_spawn_time_s = torch.zeros(num_envs, dtype=torch.float32, device=device)
+    # 记录“当前命令刷新周期编号”，用于实现“每个速度命令周期都可刷新一次障碍”。
+    if not hasattr(env, "_obstacle_spawn_cycle_idx"):
+        env._obstacle_spawn_cycle_idx = torch.zeros(num_envs, dtype=torch.long, device=device)
 
     # reset 后都标记为“尚未触发”。
     env._obstacle_spawned[env_ids] = False
+    env._obstacle_spawn_cycle_idx[env_ids] = 0
 
     # 每个 episode、每个 env 独立采样触发时间 t ~ U(1, 8)。
     t_min, t_max = delay_range_s
@@ -60,29 +64,61 @@ def spawn_obstacle_forward_once(
     forward_offset_m: float = 0.8,
     min_speed_for_velocity_dir: float = 0.05,
     obstacle_half_height_m: float = 0.5,
+    delay_range_s: tuple[float, float] = (1.0, 4.0),
+    command_refresh_interval_s: float = 10.0,
+    stash_z_offset_m: float = -5.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("obstacle"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
-    """到点后仅一次：将障碍物瞬移到“当前速度方向”前方。
+    """到点后将障碍物瞬移到“当前速度方向”前方。
 
     关键约束：
-    - 触发条件：episode_elapsed_time >= sampled_spawn_time
+    - 触发条件：每个“速度命令刷新周期”内，elapsed_in_cycle >= sampled_spawn_time
     - 位置规则：速度方向前方 forward_offset_m（默认 0.8m）
     - 回退策略：当平面速度过小（< min_speed_for_velocity_dir）时，回退到机身水平前向
-    - 每个 episode 每个 env 只触发一次
+    - 刷新策略：每个周期每个 env 只触发一次；新周期自动重采样触发时刻并重置障碍
     """
     if (not hasattr(env, "_obstacle_spawned")) or (not hasattr(env, "_obstacle_spawn_time_s")):
         return
+    if not hasattr(env, "_obstacle_spawn_cycle_idx"):
+        env._obstacle_spawn_cycle_idx = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
 
     # interval 模式下 env_ids 由 EventManager 注入，这里直接使用传入子集。
     active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
         return
 
-    # episode 已运行时间（秒）= step 计数 * step_dt
+    # episode 已运行时间（秒）= step 计数 * step_dt。
     elapsed_s = env.episode_length_buf.float() * env.step_dt
+
+    # 以“命令刷新周期”为刷新单位：每个周期重新采样一次障碍触发时刻。
+    cycle_dt = max(float(command_refresh_interval_s), 1.0e-6)
+    cycle_idx_all = torch.floor(elapsed_s / cycle_dt).long()
+    current_cycle = cycle_idx_all[active_env_ids]
+    cycle_changed = current_cycle != env._obstacle_spawn_cycle_idx[active_env_ids]
+    if torch.any(cycle_changed):
+        changed_env_ids = active_env_ids[cycle_changed]
+        env._obstacle_spawn_cycle_idx[changed_env_ids] = cycle_idx_all[changed_env_ids]
+        env._obstacle_spawned[changed_env_ids] = False
+
+        # 新周期进入时重采样触发延时，并先把障碍物藏回地下，避免旧周期位置持续生效。
+        t_min, t_max = delay_range_s
+        env._obstacle_spawn_time_s[changed_env_ids] = torch.empty(len(changed_env_ids), device=env.device).uniform_(
+            t_min, t_max
+        )
+        obstacle: RigidObject = env.scene[asset_cfg.name]
+        stash_state = obstacle.data.default_root_state[changed_env_ids].clone()
+        stash_state[:, 0:3] = env.scene.env_origins[changed_env_ids]
+        stash_state[:, 2] += stash_z_offset_m
+        stash_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device).repeat(len(changed_env_ids), 1)
+        stash_state[:, 7:13] = 0.0
+        obstacle.write_root_pose_to_sim(stash_state[:, 0:7], env_ids=changed_env_ids)
+        obstacle.write_root_velocity_to_sim(stash_state[:, 7:13], env_ids=changed_env_ids)
+
+    # 周期内已运行时间，用于判断“本周期触发延时”。
+    elapsed_in_cycle = elapsed_s[active_env_ids] - current_cycle.float() * cycle_dt
     to_spawn = (~env._obstacle_spawned[active_env_ids]) & (
-        elapsed_s[active_env_ids] >= env._obstacle_spawn_time_s[active_env_ids]
+        elapsed_in_cycle >= env._obstacle_spawn_time_s[active_env_ids]
     )
     if not torch.any(to_spawn):
         return

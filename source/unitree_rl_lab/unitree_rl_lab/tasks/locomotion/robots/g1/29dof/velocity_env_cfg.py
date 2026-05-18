@@ -217,9 +217,10 @@ class EventCfg:
 
     # interval
     # interval 阶段高频轮询（50Hz，与控制频率 step_dt=0.02s 对齐）：
-    # - 当某 env 到达其采样触发时刻后，执行一次瞬移；
+    # - 每个“速度命令刷新周期”开始时重采样一次障碍触发延时；
+    # - 当某 env 在该周期内到达采样触发时刻后，执行一次瞬移；
     # - 瞬移目标优先取“当前平面速度方向前方 0.8m”，低速时回退到机身前向；
-    # - 事件函数内部会打标记，保证每回合每 env 只触发一次。
+    # - 事件函数内部打标记，保证“每周期每 env 只触发一次”。
     spawn_obstacle_forward_once = EventTerm(
         func=mdp.spawn_obstacle_forward_once,
         mode="interval",
@@ -228,6 +229,9 @@ class EventCfg:
             "forward_offset_m": 0.8,
             "min_speed_for_velocity_dir": 0.05,
             "obstacle_half_height_m": 0.5,
+            "delay_range_s": (1.0, 4.0),
+            "command_refresh_interval_s": 10.0,
+            "stash_z_offset_m": -5.0,
             "asset_cfg": SceneEntityCfg("obstacle"),
             "robot_cfg": SceneEntityCfg("robot"),
         },
@@ -536,6 +540,10 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_mode"] = self.apf.no_contact_delta_mode
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_decay_factor"] = (
             self.apf.no_contact_delta_decay_factor
+        )
+        # 将障碍刷新周期与命令重采样周期对齐，满足“命令刷新后障碍也刷新”的需求。
+        self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
+            self.commands.base_velocity.resampling_time_range[0]
         )
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
