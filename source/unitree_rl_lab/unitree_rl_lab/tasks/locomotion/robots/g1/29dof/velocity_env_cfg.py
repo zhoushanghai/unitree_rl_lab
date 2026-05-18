@@ -2,7 +2,7 @@ import math
 
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -63,6 +63,21 @@ class RobotSceneCfg(InteractiveSceneCfg):
     )
     # robots
     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # 每个并行环境一个障碍物：
+    # - 这里只负责“资产声明”（尺寸、质量、材质、碰撞体）。
+    # - 真正的“出现时机与位置”由 EventCfg 中的 reset/interval 事件控制。
+    # - init_state 放在地下，仅用于首次加载时避免挡路。
+    obstacle = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.25, 0.25, 1.0),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=80.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.5, 0.8)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0)),
+    )
 
     # sensors
     height_scanner = RayCasterCfg(
@@ -146,8 +161,35 @@ class EventCfg:
             "velocity_range": (-1.0, 1.0),
         },
     )
+    # reset 阶段：
+    # 1) 为每个 env 独立采样一次触发时刻 t ~ U(1, 8)s；
+    # 2) 障碍先藏到地下，确保开局是“纯速度跟踪”，不被障碍干扰。
+    reset_obstacle_spawn = EventTerm(
+        func=mdp.reset_obstacle_spawn_timer_and_stash,
+        mode="reset",
+        params={
+            "delay_range_s": (1.0, 8.0),
+            "asset_cfg": SceneEntityCfg("obstacle"),
+            "stash_z_offset_m": -5.0,
+        },
+    )
 
     # interval
+    # interval 阶段高频轮询（20Hz）：
+    # - 当某 env 到达其采样触发时刻后，执行一次瞬移；
+    # - 瞬移目标为机身“水平 +x 前方 0.8m”；
+    # - 事件函数内部会打标记，保证每回合每 env 只触发一次。
+    spawn_obstacle_forward_once = EventTerm(
+        func=mdp.spawn_obstacle_forward_once,
+        mode="interval",
+        interval_range_s=(0.05, 0.05),
+        params={
+            "forward_offset_m": 0.8,
+            "obstacle_half_height_m": 0.5,
+            "asset_cfg": SceneEntityCfg("obstacle"),
+            "robot_cfg": SceneEntityCfg("robot"),
+        },
+    )
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
