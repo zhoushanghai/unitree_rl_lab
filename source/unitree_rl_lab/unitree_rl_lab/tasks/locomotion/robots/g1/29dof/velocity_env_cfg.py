@@ -330,11 +330,6 @@ class ObservationsCfg:
         # 关键：模型输入使用 APF 修正前的原始采样命令（旧 cmd），
         # 与控制执行/奖励所使用的新 cmd（APF 后）解耦。
         velocity_commands = ObsTerm(func=mdp.apf_raw_velocity_commands, params={"command_name": "base_velocity"})
-        # 同时将碰撞点槽位输入给 Actor：每槽 (x_b, y_b, valid)，用于策略直接感知局部碰撞几何。
-        obstacle_collision_slots = ObsTerm(
-            func=mdp.obstacle_collision_slots_base_xy,
-            params={"max_points": 10},
-        )
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05, noise=Unoise(n_min=-1.5, n_max=1.5))
         last_action = ObsTerm(func=mdp.last_action)
@@ -376,6 +371,21 @@ class ObservationsCfg:
 
     # privileged observations
     critic: CriticCfg = CriticCfg()
+
+
+@configclass
+class GruObservationsCfg(ObservationsCfg):
+    """GRU 专用观测：在 policy 输入中额外加入碰撞点槽位。"""
+
+    @configclass
+    class PolicyCfg(ObservationsCfg.PolicyCfg):
+        # 仅 GRU 策略输入碰撞点：每槽 (x_b, y_b, valid)。
+        obstacle_collision_slots = ObsTerm(
+            func=mdp.obstacle_collision_slots_base_xy,
+            params={"max_points": 10},
+        )
+
+    policy: PolicyCfg = PolicyCfg()
 
 
 @configclass
@@ -584,6 +594,8 @@ class RobotPlayEnvCfg(RobotEnvCfg):
 @configclass
 class RobotGruObs1EnvCfg(RobotEnvCfg):
     """G1 GRU task env cfg with single-frame observations."""
+    # 仅 GRU 任务使用带碰撞点输入的 policy 观测配置；默认 MLP 任务不包含该输入。
+    observations: GruObservationsCfg = GruObservationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
@@ -595,6 +607,8 @@ class RobotGruObs1EnvCfg(RobotEnvCfg):
 @configclass
 class RobotGruObs1PlayEnvCfg(RobotPlayEnvCfg):
     """Play cfg for G1 GRU task with single-frame observations."""
+    # Play 也保持与 GRU 训练一致：使用带碰撞点输入的 policy 观测配置。
+    observations: GruObservationsCfg = GruObservationsCfg()
 
     def __post_init__(self):
         super().__post_init__()
