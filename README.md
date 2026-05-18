@@ -172,7 +172,7 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name GRU \
-  --run_name test1——5input \
+  --run_name obs \
   --video --video_length 300 --video_interval 50000
 ```
 

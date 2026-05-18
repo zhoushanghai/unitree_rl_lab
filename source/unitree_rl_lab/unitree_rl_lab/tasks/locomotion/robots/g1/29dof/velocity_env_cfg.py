@@ -247,7 +247,7 @@ class EventCfg:
             "robot_cfg": SceneEntityCfg("robot"),
             "max_points": 10,
             "force_threshold": 0.3,
-            "merge_distance_m": 0.02,
+            "merge_distance_m": 0.05,
             "keep_radius_m": 1.0,
         },
     )
