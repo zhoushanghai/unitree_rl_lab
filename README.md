@@ -172,8 +172,17 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name GRU \
-  --run_name test1——1input \
+  --run_name test1——5input \
   --video --video_length 300 --video_interval 50000
-
-
 ```
+
+play
+```
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-27-13_test1——5input/model_14000.pt
+```
+./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-37-08_test1——1input/model_14000.pt
+
+
+logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-37-08_test1——1input/model_14000.pt
