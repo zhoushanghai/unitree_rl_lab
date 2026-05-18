@@ -413,8 +413,8 @@ class RobotGruObs1EnvCfg(RobotEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         # 关键点：GRU 任务仅使用当前帧观测（history_length=1），时序信息由 RNN hidden state 负责。
-        self.observations.policy.history_length = 1
-        self.observations.critic.history_length = 1
+        self.observations.policy.history_length = 5
+        self.observations.critic.history_length = 5
 
 
 @configclass
@@ -424,5 +424,5 @@ class RobotGruObs1PlayEnvCfg(RobotPlayEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         # 关键点：推理/播放阶段保持与训练一致，同样使用 1 帧观测输入。
-        self.observations.policy.history_length = 1
-        self.observations.critic.history_length = 1
+        self.observations.policy.history_length = 5
+        self.observations.critic.history_length = 5
