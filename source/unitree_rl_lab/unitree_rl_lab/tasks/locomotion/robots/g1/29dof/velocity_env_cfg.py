@@ -557,11 +557,13 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 10
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
-        # 关闭 command debug 可视化，避免 /Visuals/Command/* 的 point instancer 告警刷屏。
-        self.commands.base_velocity.debug_vis = False
+        # 开启 IsaacLab 命令可视化，恢复 play 里的速度箭头显示。
+        # 注意：部分环境下可能重新出现 /Visuals/Command/* 的告警日志。
+        self.commands.base_velocity.debug_vis = True
         # Play 默认视角：固定看向 env_0 附近机器人，避免启动时看不到主体。
         # eye/lookat 均为世界坐标；该设置只影响可视化，不影响训练/控制逻辑。
-        self.viewer.eye = (3.0, 3.0, 2.0)
+        # 正上方俯视：相机位于机器人上空，便于观察平面轨迹与局部避障关系。
+        self.viewer.eye = (0.0, 0.0, 6.0)
         self.viewer.lookat = (0.0, 0.0, 0.8)
 
 

@@ -106,6 +106,43 @@ import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
 
+def _focus_camera_on_robot(gym_env) -> bool:
+    """Best-effort camera focus for play startup.
+
+    Try multiple common camera APIs across IsaacLab versions to keep the robot
+    visible at startup. Failures are swallowed to avoid breaking play.
+    """
+    try:
+        core = gym_env.unwrapped
+        robot = core.scene["robot"]
+        root = robot.data.root_pos_w[0, :3].detach().cpu()
+        lookat = (float(root[0]), float(root[1]), float(root[2] + 0.8))
+        eye = (float(root[0] + 2.8), float(root[1] + 2.8), float(root[2] + 1.8))
+    except Exception:
+        return False
+
+    candidates = [core, getattr(core, "sim", None), getattr(core, "viewer", None)]
+    for obj in candidates:
+        if obj is None:
+            continue
+        for method_name in ("set_camera_view", "set_camera_pose", "set_view"):
+            method = getattr(obj, method_name, None)
+            if method is None:
+                continue
+            # Try both keyword and positional calling conventions.
+            try:
+                method(eye=eye, target=lookat)
+                return True
+            except Exception:
+                pass
+            try:
+                method(eye, lookat)
+                return True
+            except Exception:
+                pass
+    return False
+
+
 def main():
     """Play with RSL-RL agent."""
     # parse configuration
@@ -231,7 +268,14 @@ def main():
     obs = env.get_observations()
     if version("rsl-rl-lib").startswith("2.3."):
         obs, _ = env.get_observations()
+    # 启动阶段强制对焦机器人，避免部分版本/窗口下默认视角偏离主体。
+    camera_focused = False
+    for _ in range(3):
+        camera_focused = _focus_camera_on_robot(env) or camera_focused
+        if camera_focused:
+            break
     timestep = 0
+    sim_step_idx = 0
     # simulate environment
     while simulation_app.is_running():
         start_time = time.time()
@@ -243,6 +287,10 @@ def main():
             obs, _, _, _ = env.step(actions)
             if apf_grid_vis is not None:
                 apf_grid_vis.step(env)
+            # 前几步重复一次对焦，覆盖可能的首帧视角重置。
+            if sim_step_idx < 20 and not camera_focused:
+                camera_focused = _focus_camera_on_robot(env) or camera_focused
+        sim_step_idx += 1
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
