@@ -56,7 +56,7 @@ def reset_obstacle_spawn_timer_and_stash(
 
 def spawn_obstacle_forward_once(
     env,
-    env_ids: torch.Tensor | None = None,
+    env_ids: torch.Tensor,
     forward_offset_m: float = 0.8,
     obstacle_half_height_m: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("obstacle"),
@@ -72,10 +72,8 @@ def spawn_obstacle_forward_once(
     if (not hasattr(env, "_obstacle_spawned")) or (not hasattr(env, "_obstacle_spawn_time_s")):
         return
 
-    # 用局部变量消除 Optional，便于静态检查。
-    active_env_ids: torch.Tensor = (
-        torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids
-    )
+    # interval 模式下 env_ids 由 EventManager 注入，这里直接使用传入子集。
+    active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
         return
 
@@ -148,7 +146,7 @@ def reset_obstacle_collision_point_cache(
 
 def update_obstacle_collision_point_cache(
     env,
-    env_ids: torch.Tensor | None = None,
+    env_ids: torch.Tensor,
     sensor_cfg: SceneEntityCfg = SceneEntityCfg("obstacle_contact_forces"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     max_points: int = 10,
@@ -171,9 +169,7 @@ def update_obstacle_collision_point_cache(
         all_env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
         reset_obstacle_collision_point_cache(env=env, env_ids=all_env_ids, max_points=max_points)
 
-    active_env_ids: torch.Tensor = (
-        torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids
-    )
+    active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
         return
 
@@ -296,7 +292,7 @@ def reset_apf_velocity_state(
 
 def apply_apf_to_velocity_command(
     env,
-    env_ids: torch.Tensor | None = None,
+    env_ids: torch.Tensor,
     command_name: str = "base_velocity",
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     k: float = 1.0,
@@ -319,9 +315,7 @@ def apply_apf_to_velocity_command(
     if (not hasattr(env, "_obstacle_collision_points_w")) or (not hasattr(env, "_obstacle_collision_slot_valid")):
         return
 
-    active_env_ids: torch.Tensor = (
-        torch.arange(env.num_envs, device=env.device, dtype=torch.long) if env_ids is None else env_ids
-    )
+    active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
         return
 

@@ -179,10 +179,9 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
 play
 ```
 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-27-13_test1——5input/model_14000.pt
+  --num_envs 1 \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_10-47-59_gru-5his-contact/model_2000.pt
 ```
-./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-37-08_test1——1input/model_14000.pt
 
 
 logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-37-08_test1——1input/model_14000.pt
