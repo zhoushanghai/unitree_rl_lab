@@ -17,7 +17,7 @@ apf:
 
 # 障碍刷新参数：控制障碍出现时机、位置与刷新周期。
 obstacle_spawn:
-  delay_range_s: [1.5, 2.0]            # reset 时障碍触发延时采样范围（s）
+  delay_range_s: [1.5, 3.0]            # reset 时障碍触发延时采样范围（s）
   stash_z_offset_m: -5.0               # 障碍隐藏到地下的 z 偏移（m）
   interval_s: 0.02                     # 障碍刷新轮询周期（s），当前与控制频率 50Hz 对齐
   collision_update_interval_s: 0.02    # 碰撞点缓存刷新周期（s），建议与控制频率保持一致

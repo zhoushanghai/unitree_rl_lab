@@ -67,6 +67,7 @@ def spawn_obstacle_forward_once(
     obstacle_half_height_m: float = 0.5,
     delay_range_s: tuple[float, float] = (1.0, 4.0),
     command_refresh_interval_s: float = 10.0,
+    command_name: str = "base_velocity",
     stash_z_offset_m: float = -5.0,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("obstacle"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -128,22 +129,35 @@ def spawn_obstacle_forward_once(
     obstacle: RigidObject = env.scene[asset_cfg.name]
     robot: Articulation = env.scene[robot_cfg.name]
 
-    # 1) 优先使用“世界系平面速度方向”作为障碍放置方向。
-    #    这么做可以让障碍更贴近“机器人当前运动方向前方”。
-    vel_xy = robot.data.root_lin_vel_w[spawn_env_ids, :2]
-    vel_xy_norm = torch.linalg.norm(vel_xy, dim=-1, keepdim=True)
-    vel_dir_xy = vel_xy / vel_xy_norm.clamp(min=1.0e-6)
+    # 1) 优先使用“速度命令方向（cmd）”作为障碍放置方向：
+    #    - 先读取 base 系命令 (vx_b, vy_b)
+    #    - 再用机器人当前 yaw 旋转到世界系，得到 cmd_dir_xy
+    # 这样障碍会沿“期望行进方向”刷新，而不是沿瞬时实测速度方向。
+    term = env.command_manager.get_term(command_name)
+    cmd_xy_b = term.vel_command_b[spawn_env_ids, :2]
+    cmd_xy_b_norm = torch.linalg.norm(cmd_xy_b, dim=-1, keepdim=True)
 
     # 2) 当速度太小（起步、停滞、瞬时抖动）时，速度方向不稳定，
     #    回退到“机身水平前向”，避免障碍随机跳向侧方。
     quat_w = robot.data.root_quat_w[spawn_env_ids]  # (w, x, y, z)
     qw, qx, qy, qz = quat_w.unbind(dim=-1)
+    # base -> world（仅平面）：
+    # [vx_w, vy_w]^T = R(yaw) * [vx_b, vy_b]^T
+    # R(yaw) = [[cos, -sin], [sin, cos]]
+    fwd_yaw = torch.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+    cos_yaw = torch.cos(fwd_yaw)
+    sin_yaw = torch.sin(fwd_yaw)
+    cmd_x_w = cos_yaw * cmd_xy_b[:, 0] - sin_yaw * cmd_xy_b[:, 1]
+    cmd_y_w = sin_yaw * cmd_xy_b[:, 0] + cos_yaw * cmd_xy_b[:, 1]
+    cmd_xy_w = torch.stack((cmd_x_w, cmd_y_w), dim=-1)
+    cmd_dir_xy = cmd_xy_w / torch.linalg.norm(cmd_xy_w, dim=-1, keepdim=True).clamp(min=1.0e-6)
+
     fwd_x = 1.0 - 2.0 * (qy * qy + qz * qz)
     fwd_y = 2.0 * (qx * qy + qw * qz)
     fwd_dir_xy = torch.stack((fwd_x, fwd_y), dim=-1)
     fwd_dir_xy = fwd_dir_xy / torch.linalg.norm(fwd_dir_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
-    use_vel_dir = vel_xy_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
-    dir_xy = torch.where(use_vel_dir.unsqueeze(-1), vel_dir_xy, fwd_dir_xy)
+    use_cmd_dir = cmd_xy_b_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
+    dir_xy = torch.where(use_cmd_dir.unsqueeze(-1), cmd_dir_xy, fwd_dir_xy)
 
     # 侧向单位向量（与 forward 正交，右手系平面内逆时针 +90°）：
     # - forward = [fx, fy]
