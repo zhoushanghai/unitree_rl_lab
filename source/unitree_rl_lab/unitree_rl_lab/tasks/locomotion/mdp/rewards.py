@@ -80,10 +80,10 @@ def track_ang_vel_z_exp_apf(
 
 def hazard_stand_still_penalty(
     env: ManagerBasedRLEnv,
-    min_speed: float = 0.1,
+    min_speed_ratio_to_apf: float = 0.5,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """仅在“有碰撞点 + 平面速度过小”时触发的惩罚项。"""
+    """仅在“有碰撞点 + 平面速度低于 APF 目标速度比例阈值”时触发惩罚。"""
     # 缓存未初始化时返回 0，避免首步/禁用碰撞缓存时引发异常。
     if not hasattr(env, "_obstacle_collision_slot_valid"):
         return torch.zeros(env.num_envs, dtype=torch.float32, device=env.device)
@@ -91,9 +91,15 @@ def hazard_stand_still_penalty(
     asset: RigidObject = env.scene[asset_cfg.name]
     has_hazard = torch.any(env._obstacle_collision_slot_valid, dim=1)
     planar_speed = torch.linalg.norm(asset.data.root_lin_vel_b[:, :2], dim=1)
+    # APF 输出命令作为动态速度阈值基准；若缓存未就绪则回退到原始命令。
+    if hasattr(env, "_apf_v_out_b") and env._apf_v_out_b.shape[0] == env.num_envs:
+        apf_target_speed = torch.linalg.norm(env._apf_v_out_b[:, :2], dim=1)
+    else:
+        apf_target_speed = torch.linalg.norm(env.command_manager.get_command("base_velocity")[:, :2], dim=1)
+    speed_threshold = float(min_speed_ratio_to_apf) * apf_target_speed
 
-    # 两个条件同时满足才惩罚：存在碰撞点 且 速度小于阈值。
-    is_stuck_under_hazard = has_hazard & (planar_speed < float(min_speed))
+    # 两个条件同时满足才惩罚：存在碰撞点 且 当前速度低于 APF 目标速度比例阈值。
+    is_stuck_under_hazard = has_hazard & (planar_speed < speed_threshold)
     return is_stuck_under_hazard.float()
 
 

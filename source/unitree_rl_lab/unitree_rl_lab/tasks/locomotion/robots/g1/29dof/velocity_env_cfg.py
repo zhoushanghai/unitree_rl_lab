@@ -500,7 +500,7 @@ class RewardsCfg:
     hazard_stand_still = RewTerm(
         func=mdp.hazard_stand_still_penalty,
         weight=float(CONFIG.stuck_penalty.weight),
-        params={"min_speed": float(CONFIG.stuck_penalty.min_speed_mps)},
+        params={"min_speed_ratio_to_apf": float(CONFIG.stuck_penalty.min_speed_ratio_to_apf)},
     )
 
 

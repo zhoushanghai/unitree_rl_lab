@@ -28,5 +28,5 @@ obstacle_spawn:
 
 # Hazard 死站惩罚参数：仅在“有碰撞点 + 速度过小”时触发负奖励。
 stuck_penalty:
-  weight: -0.5          # 惩罚权重（负值），绝对值越大越不允许站桩
-  min_speed_mps: 0.10    # 低速阈值（m/s），|v_xy| 小于该值判定为“近似不动”
+  weight: -0.5                  # 惩罚权重（负值），绝对值越大越不允许站桩
+  min_speed_ratio_to_apf: 0.5   # 低速比例阈值：|v_xy| < 该比例 * |v_apf_xy| 时判定为“近似不动”
