@@ -162,8 +162,7 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --max_iterations 5000000 \
   --experiment_name GRU \
   --run_name collision-point-gruonly  \
-  --video --video_length 300 --video_interval 50000 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_14-12-31_obs/model_500.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_19-29-58_collision-point-gruonly/model_4800.pt
 ```
 
 play
@@ -174,7 +173,7 @@ play
   --apf_collision_grid_radius_m 1.0 \
   --apf_collision_grid_cell_m 0.05 \
   --apf_collision_grid_env_id 0 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_14-40-09_obs_new/model_5400.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_23-00-14_collision-point-gruonly/model_15300.pt
 ```
 
 
