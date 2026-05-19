@@ -321,6 +321,24 @@ def update_obstacle_collision_point_cache(
     points_w[active_env_ids] = points_w[active_env_ids].masked_fill(~valid[active_env_ids].unsqueeze(-1), 0.0)
 
 
+def _ensure_apf_velocity_buffers(env) -> None:
+    """仅分配 APF 缓存张量（不清零 EMA 状态）。"""
+    device = env.device
+    num_envs = env.num_envs
+    if not hasattr(env, "_apf_delta_v_w"):
+        env._apf_delta_v_w = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
+    if not hasattr(env, "_apf_v_cmd_b"):
+        env._apf_v_cmd_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
+    if not hasattr(env, "_apf_delta_v_b"):
+        env._apf_delta_v_b = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
+    if not hasattr(env, "_apf_v_out_b"):
+        env._apf_v_out_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
+    # 与 proprioception 可视化面板字段对齐（别名引用同一底层张量）。
+    env.apf_v_cmd_b = env._apf_v_cmd_b
+    env.apf_delta_v_b = env._apf_delta_v_b
+    env.apf_v_out_b = env._apf_v_out_b
+
+
 def reset_apf_velocity_state(
     env,
     env_ids: torch.Tensor,
@@ -334,29 +352,11 @@ def reset_apf_velocity_state(
     if env_ids.numel() == 0:
         return
 
-    device = env.device
-    num_envs = env.num_envs
-
-    # _apf_delta_v_w: 世界系排斥速度的 EMA 状态，形状 (num_envs, 2)
-    if not hasattr(env, "_apf_delta_v_w"):
-        env._apf_delta_v_w = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
+    _ensure_apf_velocity_buffers(env)
     env._apf_delta_v_w[env_ids] = 0.0
-
-    # 调试缓存：便于后续可视化/日志检查（不参与控制闭环计算）。
-    if not hasattr(env, "_apf_v_cmd_b"):
-        env._apf_v_cmd_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
-    if not hasattr(env, "_apf_delta_v_b"):
-        env._apf_delta_v_b = torch.zeros((num_envs, 2), dtype=torch.float32, device=device)
-    if not hasattr(env, "_apf_v_out_b"):
-        env._apf_v_out_b = torch.zeros((num_envs, 3), dtype=torch.float32, device=device)
     env._apf_v_cmd_b[env_ids] = 0.0
     env._apf_delta_v_b[env_ids] = 0.0
     env._apf_v_out_b[env_ids] = 0.0
-
-    # 与 proprioception 可视化面板字段对齐（别名引用同一底层张量）。
-    env.apf_v_cmd_b = env._apf_v_cmd_b
-    env.apf_delta_v_b = env._apf_delta_v_b
-    env.apf_v_out_b = env._apf_v_out_b
 
 
 def apply_apf_to_velocity_command(
@@ -369,6 +369,7 @@ def apply_apf_to_velocity_command(
     rho: float = 0.2,
     beta: float = 2.0,
     alpha: float = 0.5,
+    delta_vel_xy_max: float = 1.0,
     lin_vel_xy_max: float = 1.0,
     no_contact_delta_mode: str = "zero",
     no_contact_delta_decay_factor: float = 0.5,
@@ -392,8 +393,8 @@ def apply_apf_to_velocity_command(
     if active_env_ids.numel() == 0:
         return
 
-    # 若 reset 事件顺序被改动导致 APF 状态不存在，这里兜底初始化一次。
-    reset_apf_velocity_state(env=env, env_ids=active_env_ids)
+    # 仅分配缓存；EMA 状态只在 episode reset 时清零，避免每步把斥力压成 (1-alpha)*current。
+    _ensure_apf_velocity_buffers(env)
 
     robot: Articulation = env.scene[robot_cfg.name]
     points_w = env._obstacle_collision_points_w
@@ -435,6 +436,12 @@ def apply_apf_to_velocity_command(
         # EMA 平滑（保留低频趋势，削弱碰撞瞬时尖峰）。
         env._apf_delta_v_w[env_ids_with_contact] = (
             alpha * env._apf_delta_v_w[env_ids_with_contact] + (1.0 - alpha) * delta_v_w_current
+        )
+        # 排斥增量单独限幅：||Δv_w|| <= delta_vel_xy_max（多碰撞点叠加后可能超 k）。
+        delta_w = env._apf_delta_v_w[env_ids_with_contact]
+        delta_w_norm = torch.linalg.norm(delta_w, dim=-1, keepdim=True).clamp(min=1.0e-6)
+        env._apf_delta_v_w[env_ids_with_contact] = delta_w * torch.clamp(
+            delta_vel_xy_max / delta_w_norm, max=1.0
         )
 
         # 世界系 -> base 系（只用 yaw 旋转，保持平面控制语义）。

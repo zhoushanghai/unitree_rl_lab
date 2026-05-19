@@ -31,9 +31,11 @@ class ApfCfg:
     rho: float = 0.2  # 近区偏移（m），d<=rho 时权重保持高值
     beta: float = 2.0  # 权重衰减指数
     k: float = 1.0  # 排斥强度系数
-    alpha: float = 0.8  # EMA 平滑系数
+    alpha: float = 0.9 # EMA 平滑系数
 
-    # 合成后平面速度模长上限（m/s）
+    # 排斥增量平面模长上限（m/s）：限制 ||Δv_xy||
+    delta_vel_xy_max: float = 1.0
+    # 合成后平面速度模长上限（m/s）：限制 ||v_cmd + Δv||
     lin_vel_xy_max: float = 1.0
 
     # 无有效碰撞点时如何处理 APF 的 EMA 内部状态：
@@ -552,6 +554,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.apply_apf_to_base_velocity.params["rho"] = self.apf.rho
         self.events.apply_apf_to_base_velocity.params["beta"] = self.apf.beta
         self.events.apply_apf_to_base_velocity.params["alpha"] = self.apf.alpha
+        self.events.apply_apf_to_base_velocity.params["delta_vel_xy_max"] = self.apf.delta_vel_xy_max
         self.events.apply_apf_to_base_velocity.params["lin_vel_xy_max"] = self.apf.lin_vel_xy_max
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_mode"] = self.apf.no_contact_delta_mode
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_decay_factor"] = (

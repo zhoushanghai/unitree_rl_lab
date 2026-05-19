@@ -173,7 +173,7 @@ play
   --apf_collision_grid_radius_m 1.0 \
   --apf_collision_grid_cell_m 0.05 \
   --apf_collision_grid_env_id 0 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_23-00-14_collision-point-gruonly/model_15300.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_23-00-14_collision-point-gruonly/model_21900.pt
 ```
 
 
