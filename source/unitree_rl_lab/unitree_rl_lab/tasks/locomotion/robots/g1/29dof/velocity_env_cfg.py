@@ -95,13 +95,14 @@ class RobotSceneCfg(InteractiveSceneCfg):
     obstacle = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Obstacle",
         spawn=sim_utils.CuboidCfg(
-            size=(0.25, 0.25, 1.0),
+            # 障碍资产参数统一从配置文件读取，避免多处硬编码。
+            size=tuple(CONFIG.obstacle.size_m),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=80.0),
+            mass_props=sim_utils.MassPropertiesCfg(mass=float(CONFIG.obstacle.mass_kg)),
             collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.5, 0.8)),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=tuple(CONFIG.obstacle.diffuse_color_rgb)),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0)),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(CONFIG.obstacle.init_state_pos_m)),
     )
 
     # sensors
@@ -204,9 +205,10 @@ class EventCfg:
         func=mdp.reset_obstacle_spawn_timer_and_stash,
         mode="reset",
         params={
-            "delay_range_s": (1.0, 4.0),
+            # 障碍出现参数统一由配置文件驱动。
+            "delay_range_s": tuple(CONFIG.obstacle_spawn.delay_range_s),
             "asset_cfg": SceneEntityCfg("obstacle"),
-            "stash_z_offset_m": -5.0,
+            "stash_z_offset_m": float(CONFIG.obstacle_spawn.stash_z_offset_m),
         },
     )
     # reset 时清空碰撞点缓存（每个 env 都从空缓存开始）。
@@ -214,7 +216,7 @@ class EventCfg:
         func=mdp.reset_obstacle_collision_point_cache,
         mode="reset",
         params={
-            "max_points": 10,
+            "max_points": int(CONFIG.obstacle.collision_max_points),
         },
     )
 
@@ -228,15 +230,18 @@ class EventCfg:
     spawn_obstacle_forward_once = EventTerm(
         func=mdp.spawn_obstacle_forward_once,
         mode="interval",
-        interval_range_s=(0.02, 0.02),
+        interval_range_s=(
+            float(CONFIG.obstacle_spawn.interval_s),
+            float(CONFIG.obstacle_spawn.interval_s),
+        ),
         params={
-            "forward_offset_m": 0.8,
-            "lateral_offset_range_m": (-0.2, 0.2),
-            "min_speed_for_velocity_dir": 0.05,
-            "obstacle_half_height_m": 0.5,
-            "delay_range_s": (1.0, 4.0),
-            "command_refresh_interval_s": 10.0,
-            "stash_z_offset_m": -5.0,
+            "forward_offset_m": float(CONFIG.obstacle_spawn.forward_offset_m),
+            "lateral_offset_range_m": tuple(CONFIG.obstacle_spawn.lateral_offset_range_m),
+            "min_speed_for_velocity_dir": float(CONFIG.obstacle_spawn.min_speed_for_velocity_dir),
+            "obstacle_half_height_m": float(CONFIG.obstacle_spawn.obstacle_half_height_m),
+            "delay_range_s": tuple(CONFIG.obstacle_spawn.delay_range_s),
+            "command_refresh_interval_s": float(CONFIG.obstacle_spawn.command_refresh_interval_s),
+            "stash_z_offset_m": float(CONFIG.obstacle_spawn.stash_z_offset_m),
             "asset_cfg": SceneEntityCfg("obstacle"),
             "robot_cfg": SceneEntityCfg("robot"),
         },
@@ -246,14 +251,17 @@ class EventCfg:
     update_obstacle_collision_points = EventTerm(
         func=mdp.update_obstacle_collision_point_cache,
         mode="interval",
-        interval_range_s=(0.02, 0.02),
+        interval_range_s=(
+            float(CONFIG.obstacle_spawn.collision_update_interval_s),
+            float(CONFIG.obstacle_spawn.collision_update_interval_s),
+        ),
         params={
             "sensor_cfg": SceneEntityCfg("obstacle_contact_forces"),
             "robot_cfg": SceneEntityCfg("robot"),
-            "max_points": 10,
-            "force_threshold": 1.0,
-            "merge_distance_m": 0.05,
-            "keep_radius_m": 1.0,
+            "max_points": int(CONFIG.obstacle.collision_max_points),
+            "force_threshold": float(CONFIG.obstacle.collision_force_threshold),
+            "merge_distance_m": float(CONFIG.obstacle.collision_merge_distance_m),
+            "keep_radius_m": float(CONFIG.obstacle.collision_keep_radius_m),
         },
     )
     # reset 时清空 APF 内部状态（EMA 缓存 + 调试变量）。
@@ -358,7 +366,7 @@ class ObservationsCfg:
         # 与 Actor 保持一致：Critic 也输入同一份碰撞点槽位，稳定 AC 观测语义。
         obstacle_collision_slots = ObsTerm(
             func=mdp.obstacle_collision_slots_base_xy,
-            params={"max_points": 10},
+            params={"max_points": int(CONFIG.obstacle.collision_max_points)},
         )
         joint_pos_rel = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel_rel = ObsTerm(func=mdp.joint_vel_rel, scale=0.05)
@@ -385,7 +393,7 @@ class GruObservationsCfg(ObservationsCfg):
         # 仅 GRU 策略输入碰撞点：每槽 (x_b, y_b, valid)。
         obstacle_collision_slots = ObsTerm(
             func=mdp.obstacle_collision_slots_base_xy,
-            params={"max_points": 10},
+            params={"max_points": int(CONFIG.obstacle.collision_max_points)},
         )
 
     policy: PolicyCfg = PolicyCfg()
