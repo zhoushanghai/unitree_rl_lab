@@ -19,6 +19,7 @@ from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR, ISAACLAB_NUCLEUS_DIR
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
+from unitree_rl_lab.config import CONFIG
 from unitree_rl_lab.tasks.locomotion import mdp
 
 
@@ -533,6 +534,17 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
 
     def __post_init__(self):
         """Post initialization."""
+        # 从全局 CONFIG 直接读取 APF 参数。
+        self.apf.R = CONFIG.apf.R
+        self.apf.rho = CONFIG.apf.rho
+        self.apf.beta = CONFIG.apf.beta
+        self.apf.k = CONFIG.apf.k
+        self.apf.alpha = CONFIG.apf.alpha
+        self.apf.delta_vel_xy_max = CONFIG.apf.delta_vel_xy_max
+        self.apf.lin_vel_xy_max = CONFIG.apf.lin_vel_xy_max
+        self.apf.no_contact_delta_mode = CONFIG.apf.no_contact_delta_mode
+        self.apf.no_contact_delta_decay_factor = CONFIG.apf.no_contact_delta_decay_factor
+
         # general settings
         self.decimation = 4
         self.episode_length_s = 20.0
@@ -560,9 +572,27 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_decay_factor"] = (
             self.apf.no_contact_delta_decay_factor
         )
-        # 将障碍刷新周期与命令重采样周期对齐，满足“命令刷新后障碍也刷新”的需求。
+        # 从全局 CONFIG 直接读取障碍刷新参数（reset + interval）。
+        delay_range = tuple(CONFIG.obstacle_spawn.delay_range_s)
+        interval_tuple = (float(CONFIG.obstacle_spawn.interval_s), float(CONFIG.obstacle_spawn.interval_s))
+        self.events.reset_obstacle_spawn.params["delay_range_s"] = delay_range
+        self.events.spawn_obstacle_forward_once.params["delay_range_s"] = delay_range
+        self.events.spawn_obstacle_forward_once.interval_range_s = interval_tuple
+
+        self.events.reset_obstacle_spawn.params["stash_z_offset_m"] = CONFIG.obstacle_spawn.stash_z_offset_m
+        self.events.spawn_obstacle_forward_once.params["stash_z_offset_m"] = CONFIG.obstacle_spawn.stash_z_offset_m
+        self.events.spawn_obstacle_forward_once.params["forward_offset_m"] = CONFIG.obstacle_spawn.forward_offset_m
+        self.events.spawn_obstacle_forward_once.params["lateral_offset_range_m"] = tuple(
+            CONFIG.obstacle_spawn.lateral_offset_range_m
+        )
+        self.events.spawn_obstacle_forward_once.params["min_speed_for_velocity_dir"] = (
+            CONFIG.obstacle_spawn.min_speed_for_velocity_dir
+        )
+        self.events.spawn_obstacle_forward_once.params["obstacle_half_height_m"] = (
+            CONFIG.obstacle_spawn.obstacle_half_height_m
+        )
         self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
-            self.commands.base_velocity.resampling_time_range[0]
+            CONFIG.obstacle_spawn.command_refresh_interval_s
         )
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator

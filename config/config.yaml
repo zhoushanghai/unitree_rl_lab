@@ -1,0 +1,27 @@
+# locomotion 统一参数配置（第一版）
+# 说明：
+# 1) 先集中 APF 和障碍刷新相关参数，后续再逐步扩展到 reward/obs/ppo。
+# 2) 当前文件先作为“单一参数源”草案，后续可在 env cfg 中接入读取逻辑。
+
+# APF 速度修正参数：控制排斥速度计算、平滑与限幅。
+apf:
+  R: 1.0                            # 势场生效半径（m）
+  rho: 0.2                          # 近区偏移（m），d<=rho 时权重保持高值
+  beta: 2.0                         # 距离权重衰减指数
+  k: 1.0                            # 排斥强度系数
+  alpha: 0.9                        # EMA 平滑系数（越大越平滑，响应越慢）
+  delta_vel_xy_max: 1.0             # 排斥增量平面速度上限（m/s），限制 ||Δv_xy||
+  lin_vel_xy_max: 1.0               # 合成后平面速度上限（m/s），限制 ||v_cmd + Δv||
+  no_contact_delta_mode: "zero"     # 无碰撞点时 EMA 处理：zero=清零，decay=按因子衰减
+  no_contact_delta_decay_factor: 0.5  # 仅在 no_contact_delta_mode=decay 时生效
+
+# 障碍刷新参数：控制障碍出现时机、位置与刷新周期。
+obstacle_spawn:
+  delay_range_s: [1.0, 4.0]            # reset 时障碍触发延时采样范围（s）
+  stash_z_offset_m: -5.0               # 障碍隐藏到地下的 z 偏移（m）
+  interval_s: 0.02                     # 障碍刷新轮询周期（s），当前与控制频率 50Hz 对齐
+  forward_offset_m: 0.8                # 障碍刷新到机器人前方的基准距离（m）
+  lateral_offset_range_m: [-0.2, 0.2]  # 侧向随机偏移范围（m）
+  min_speed_for_velocity_dir: 0.05     # 低速阈值（m/s），低于该值时回退到机身前向
+  obstacle_half_height_m: 0.5          # 障碍半高（m），用于生成落点高度
+  command_refresh_interval_s: 10.0     # 命令刷新周期（s），建议与 base_velocity.resampling_time_range 对齐
