@@ -173,7 +173,8 @@ CUDA_VISIBLE_DEVICES=0 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-G
   --apf_collision_grid_radius_m 1.0 \
   --apf_collision_grid_cell_m 0.05 \
   --apf_collision_grid_env_id 0 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-19_19-49-39_new_exp/model_1800.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-19_19-49-39_new_exp/model_3600.pt \
+  --disable_apf_assist_force
 
 
   CUDA_VISIBLE_DEVICES=0 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
