@@ -290,6 +290,23 @@ class EventCfg:
             "no_contact_delta_decay_factor": 0.5,
         },
     )
+    # interval 按 APF 方向施加机身辅助力：
+    # - 仅在“有碰撞点 + APF 速度有效”时施力
+    # - 力大小由 |v_apf| * k_assist * alpha 决定，并受 force_max_n 限幅
+    apply_apf_assist_force = EventTerm(
+        func=mdp.apply_apf_assist_force,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "k_assist": float(CONFIG.assist_force.k_assist),
+            "force_max_n": float(CONFIG.assist_force.force_max_n),
+            "eps_speed_mps": float(CONFIG.assist_force.eps_speed_mps),
+            "force_update_rate": float(CONFIG.assist_force.force_update_rate),
+            "alpha_init": float(CONFIG.assist_force.alpha_init),
+            "alpha_min": float(CONFIG.assist_force.alpha_min),
+            "asset_cfg": SceneEntityCfg("robot", body_names="torso_link"),
+        },
+    )
     # push_robot = EventTerm(
     #     func=mdp.push_by_setting_velocity,
     #     mode="interval",
@@ -527,6 +544,16 @@ class CurriculumCfg:
 
     terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
     lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
+    apf_assist_alpha_decay = CurrTerm(
+        func=mdp.apf_assist_alpha_decay,
+        params={
+            "reward_term_name": "track_lin_vel_xy",
+            "threshold_ratio": float(CONFIG.assist_force.upgrade_threshold),
+            "decay_step": float(CONFIG.assist_force.decay_step),
+            "alpha_min": float(CONFIG.assist_force.alpha_min),
+            "alpha_init": float(CONFIG.assist_force.alpha_init),
+        },
+    )
 
 
 @configclass
@@ -586,6 +613,19 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.apply_apf_to_base_velocity.params["no_contact_delta_decay_factor"] = (
             self.apf.no_contact_delta_decay_factor
         )
+        # 将 APF 外力辅助课程参数同步到事件/课程，保证配置单一来源。
+        assist_interval = (float(CONFIG.assist_force.interval_s), float(CONFIG.assist_force.interval_s))
+        self.events.apply_apf_assist_force.interval_range_s = assist_interval
+        self.events.apply_apf_assist_force.params["k_assist"] = float(CONFIG.assist_force.k_assist)
+        self.events.apply_apf_assist_force.params["force_max_n"] = float(CONFIG.assist_force.force_max_n)
+        self.events.apply_apf_assist_force.params["eps_speed_mps"] = float(CONFIG.assist_force.eps_speed_mps)
+        self.events.apply_apf_assist_force.params["force_update_rate"] = float(CONFIG.assist_force.force_update_rate)
+        self.events.apply_apf_assist_force.params["alpha_init"] = float(CONFIG.assist_force.alpha_init)
+        self.events.apply_apf_assist_force.params["alpha_min"] = float(CONFIG.assist_force.alpha_min)
+        self.curriculum.apf_assist_alpha_decay.params["threshold_ratio"] = float(CONFIG.assist_force.upgrade_threshold)
+        self.curriculum.apf_assist_alpha_decay.params["decay_step"] = float(CONFIG.assist_force.decay_step)
+        self.curriculum.apf_assist_alpha_decay.params["alpha_min"] = float(CONFIG.assist_force.alpha_min)
+        self.curriculum.apf_assist_alpha_decay.params["alpha_init"] = float(CONFIG.assist_force.alpha_init)
         # 从全局 CONFIG 直接读取障碍刷新参数（reset + interval）。
         delay_range = tuple(CONFIG.obstacle_spawn.delay_range_s)
         interval_tuple = (float(CONFIG.obstacle_spawn.interval_s), float(CONFIG.obstacle_spawn.interval_s))

@@ -59,3 +59,33 @@ def ang_vel_cmd_levels(
             ).tolist()
 
     return torch.tensor(ranges.ang_vel_z[1], device=env.device)
+
+
+def apf_assist_alpha_decay(
+    env: ManagerBasedRLEnv,
+    env_ids: Sequence[int],
+    reward_term_name: str = "track_lin_vel_xy",
+    threshold_ratio: float = 0.8,
+    decay_step: float = 0.01,
+    alpha_min: float = 0.2,
+    alpha_init: float = 1.0,
+) -> torch.Tensor:
+    """按速度课程同口径衰减 APF 外力辅助系数 alpha。"""
+    # 惰性初始化全局 alpha：按训练全局共享，不随单个 env reset 回滚。
+    if not hasattr(env, "_apf_assist_alpha"):
+        env._apf_assist_alpha = torch.tensor(float(alpha_init), dtype=torch.float32, device=env.device)
+
+    reward_term = env.reward_manager.get_term_cfg(reward_term_name)
+    reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
+
+    # 仅在 episode 边界按课程规则更新：达标则衰减 1%，不达标则停滞。
+    if env.common_step_counter % env.max_episode_length == 0:
+        if reward > reward_term.weight * float(threshold_ratio):
+            env._apf_assist_alpha = torch.clamp(
+                env._apf_assist_alpha - float(decay_step),
+                min=float(alpha_min),
+            )
+
+    # 便于日志与调试读取当前课程系数。
+    env.apf_assist_alpha = env._apf_assist_alpha
+    return env._apf_assist_alpha

@@ -42,3 +42,15 @@ obstacle:
 stuck_penalty:
   weight: -0.5                  # 惩罚权重（负值），绝对值越大越不允许站桩
   min_speed_ratio_to_apf: 0.5   # 低速比例阈值：|v_xy| < 该比例 * |v_apf_xy| 时判定为“近似不动”
+
+# APF 外力辅助课程参数：hazard 时沿 APF 方向施力，并按速度课程口径逐步退辅。
+assist_force:
+  interval_s: 0.02             # 外力事件刷新周期（s），建议与控制频率对齐
+  eps_speed_mps: 0.1         # APF 速度有效阈值（m/s），低于该值不施加辅助力
+  k_assist: 100.0              # 力度系数（N/(m/s)），F=|v_apf|*k*alpha
+  force_max_n: 100.0           # 辅助力上限（N）
+  force_update_rate: 0.1       # 一阶滤波更新率 beta，F_t=(1-beta)*F_{t-1}+beta*F_target
+  alpha_init: 1.0              # 初始辅助系数 alpha
+  alpha_min: 0.0               # 最小辅助系数，设为 0.0 可实现“最终完全取消辅助力”
+  decay_step: 0.01             # 达标后单次衰减步长（1%）
+  upgrade_threshold: 0.7       # 速度课程达标阈值比例（按 track_lin_vel_xy.weight * ratio 判定）

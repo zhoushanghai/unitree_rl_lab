@@ -496,3 +496,81 @@ def apply_apf_to_velocity_command(
     env._apf_delta_v_b[active_env_ids] = delta_v_b
     env._apf_v_out_b[active_env_ids, :2] = v_out_xy
     env._apf_v_out_b[active_env_ids, 2] = wz
+
+
+def _ensure_apf_assist_state(env, alpha_init: float = 1.0) -> None:
+    """初始化 APF 外力辅助的运行时状态。"""
+    if not hasattr(env, "_apf_assist_alpha"):
+        env._apf_assist_alpha = torch.tensor(float(alpha_init), dtype=torch.float32, device=env.device)
+    if not hasattr(env, "_apf_assist_force_b"):
+        env._apf_assist_force_b = torch.zeros((env.num_envs, 2), dtype=torch.float32, device=env.device)
+    # 对外暴露调试别名，便于可视化/日志读取。
+    env.apf_assist_alpha = env._apf_assist_alpha
+    env.apf_assist_force_b = env._apf_assist_force_b
+
+
+def apply_apf_assist_force(
+    env,
+    env_ids: torch.Tensor,
+    k_assist: float = 100.0,
+    force_max_n: float = 100.0,
+    eps_speed_mps: float = 1.0e-3,
+    force_update_rate: float = 0.1,
+    alpha_init: float = 1.0,
+    alpha_min: float = 0.2,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names="torso_link"),
+):
+    """在 hazard 下沿 APF 速度方向给机身施加辅助外力。
+
+    施力强度：
+        |F| = clip(|v_apf_xy| * k_assist * alpha, 0, force_max_n)
+    其中 alpha 由 curriculum 在 episode 边界按阈值规则衰减。
+    """
+    active_env_ids: torch.Tensor = env_ids
+    if active_env_ids.numel() == 0:
+        return
+
+    _ensure_apf_assist_state(env, alpha_init=alpha_init)
+    env._apf_assist_alpha = torch.clamp(env._apf_assist_alpha, min=float(alpha_min), max=1.0)
+
+    robot: Articulation = env.scene[asset_cfg.name]
+    body_ids = asset_cfg.body_ids if asset_cfg.body_ids is not None else []
+    if len(body_ids) == 0:
+        return
+
+    # 始终先构造零力，保证无 hazard 时会主动清空上一步外力。
+    forces = torch.zeros((active_env_ids.numel(), len(body_ids), 3), dtype=torch.float32, device=env.device)
+    torques = torch.zeros_like(forces)
+
+    has_collision_cache = hasattr(env, "_obstacle_collision_slot_valid")
+    has_apf_cache = hasattr(env, "_apf_v_out_b") and env._apf_v_out_b.shape[0] == env.num_envs
+    if has_collision_cache and has_apf_cache:
+        has_hazard = torch.any(env._obstacle_collision_slot_valid[active_env_ids], dim=1)
+        apf_v_xy = env._apf_v_out_b[active_env_ids, :2]
+        apf_speed = torch.linalg.norm(apf_v_xy, dim=1)
+        valid = has_hazard & (apf_speed > float(eps_speed_mps))
+
+        # 先计算“目标外力”（未滤波），再通过一阶滤波平滑更新，避免力突变。
+        target_force_b = torch.zeros((active_env_ids.numel(), 2), dtype=torch.float32, device=env.device)
+        if torch.any(valid):
+            apf_dir = apf_v_xy[valid] / apf_speed[valid].unsqueeze(-1).clamp(min=1.0e-6)
+            force_mag = torch.clamp(
+                apf_speed[valid] * float(k_assist) * env._apf_assist_alpha,
+                min=0.0,
+                max=float(force_max_n),
+            )
+            target_force_b[valid] = apf_dir * force_mag.unsqueeze(-1)
+
+        # 一阶滤波：F_t = (1-beta) * F_{t-1} + beta * F_target，beta 越小越平稳。
+        beta = max(0.0, min(1.0, float(force_update_rate)))
+        prev_force_b = env._apf_assist_force_b[active_env_ids]
+        smooth_force_b = (1.0 - beta) * prev_force_b + beta * target_force_b
+
+        # 将平面外力施加到目标机身刚体（默认 torso_link）。
+        forces[:, 0, :2] = smooth_force_b
+        env._apf_assist_force_b[active_env_ids] = smooth_force_b
+    else:
+        env._apf_assist_force_b[active_env_ids] = 0.0
+
+    # 每步更新外力缓冲并写回仿真，确保“达标衰减/失效清零”能实时生效。
+    robot.set_external_force_and_torque(forces, torques, env_ids=active_env_ids, body_ids=body_ids)
