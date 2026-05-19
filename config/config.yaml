@@ -25,3 +25,8 @@ obstacle_spawn:
   min_speed_for_velocity_dir: 0.05     # 低速阈值（m/s），低于该值时回退到机身前向
   obstacle_half_height_m: 0.5          # 障碍半高（m），用于生成落点高度
   command_refresh_interval_s: 10.0     # 命令刷新周期（s），建议与 base_velocity.resampling_time_range 对齐
+
+# Hazard 死站惩罚参数：仅在“有碰撞点 + 速度过小”时触发负奖励。
+stuck_penalty:
+  weight: -0.5          # 惩罚权重（负值），绝对值越大越不允许站桩
+  min_speed_mps: 0.10    # 低速阈值（m/s），|v_xy| 小于该值判定为“近似不动”

@@ -496,6 +496,12 @@ class RewardsCfg:
             "sensor_cfg": SceneEntityCfg("contact_forces", body_names=["(?!.*ankle.*).*"]),
         },
     )
+    # 仅在“有碰撞点 + 速度很小”时触发，抑制障碍附近站桩。
+    hazard_stand_still = RewTerm(
+        func=mdp.hazard_stand_still_penalty,
+        weight=float(CONFIG.stuck_penalty.weight),
+        params={"min_speed": float(CONFIG.stuck_penalty.min_speed_mps)},
+    )
 
 
 @configclass
@@ -594,7 +600,6 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
             CONFIG.obstacle_spawn.command_refresh_interval_s
         )
-
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
         if getattr(self.curriculum, "terrain_levels", None) is not None:
