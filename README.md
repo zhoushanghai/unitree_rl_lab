@@ -167,13 +167,18 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
 
 play
 ```
-./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
+CUDA_VISIBLE_DEVICES=0 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
   --num_envs 1 \
   --apf_collision_grid_vis \
   --apf_collision_grid_radius_m 1.0 \
   --apf_collision_grid_cell_m 0.05 \
   --apf_collision_grid_env_id 0 \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_23-00-14_collision-point-gruonly/model_21900.pt
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-19_19-49-39_new_exp/model_1800.pt
+
+
+  CUDA_VISIBLE_DEVICES=0 ./unitree_rl_lab.sh -p --task Unitree-G1-29dof-Velocity-GRU \
+  --num_envs 1 \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-19_19-49-39_new_exp/model_1800.pt
 ```
 
 

@@ -667,6 +667,8 @@ class RobotPlayEnvCfg(RobotEnvCfg):
         self.scene.terrain.terrain_generator.num_rows = 2
         self.scene.terrain.terrain_generator.num_cols = 10
         self.commands.base_velocity.ranges = self.commands.base_velocity.limit_ranges
+        # Play 阶段将线速度采样下限抬到 0.4m/s，避免低速命令影响可视化观察。
+        self.commands.base_velocity.ranges.lin_vel_x = (0.4, self.commands.base_velocity.limit_ranges.lin_vel_x[1])
         # 开启 IsaacLab 命令可视化，恢复 play 里的速度箭头显示。
         # 注意：部分环境下可能重新出现 /Visuals/Command/* 的告警日志。
         self.commands.base_velocity.debug_vis = True

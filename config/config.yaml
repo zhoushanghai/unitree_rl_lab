@@ -47,8 +47,8 @@ stuck_penalty:
 assist_force:
   interval_s: 0.02             # 外力事件刷新周期（s），建议与控制频率对齐
   eps_speed_mps: 0.1         # APF 速度有效阈值（m/s），低于该值不施加辅助力
-  k_assist: 100.0              # 力度系数（N/(m/s)），F=|v_apf|*k*alpha
-  force_max_n: 100.0           # 辅助力上限（N）
+  k_assist: 50.0              # 力度系数（N/(m/s)），F=|v_apf|*k*alpha
+  force_max_n: 50.0           # 辅助力上限（N）
   force_update_rate: 0.1       # 一阶滤波更新率 beta，F_t=(1-beta)*F_{t-1}+beta*F_target
   alpha_init: 1.0              # 初始辅助系数 alpha
   alpha_min: 0.0               # 最小辅助系数，设为 0.0 可实现“最终完全取消辅助力”
