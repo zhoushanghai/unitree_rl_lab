@@ -5,7 +5,8 @@
 
 """Configuration for Unitree robots.
 
-Reference: https://github.com/unitreerobotics/unitree_ros
+G1 URDF 默认使用本包内 `g1_description/`（无需 clone unitree_ros）。
+可选：USD 资产见 UNITREE_MODEL_DIR；或设置环境变量 UNITREE_ROS_DIR 作 URDF 回退。
 """
 
 import os
@@ -15,9 +16,28 @@ from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.utils import configclass
 
-UNITREE_MODEL_DIR = "path/to/unitree_model"  # Replace with the actual path to your unitree_model directory
-# UNITREE_ROS_DIR = "path/to/unitree_ros"  # Replace with the actual path to your unitree_ros package
-UNITREE_ROS_DIR = "/home/hz/proprioception/unitree_ros"  # Replace with the actual path to your unitree_ros package
+# 本文件所在目录下的 G1 描述包（g1_29dof_rev_1_0.urdf + meshes/）
+_ROBOTS_PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+G1_DESCRIPTION_DIR = os.path.join(_ROBOTS_PKG_DIR, "g1_description")
+G1_29DOF_URDF_PATH = os.path.join(G1_DESCRIPTION_DIR, "g1_29dof_rev_1_0.urdf")
+
+UNITREE_MODEL_DIR = "path/to/unitree_model"  # USD 方案：HuggingFace unitree_model
+# 仅当本地 g1_description 不存在时，才回退到外部 unitree_ros 路径。
+UNITREE_ROS_DIR = os.environ.get("UNITREE_ROS_DIR", "")
+
+
+def _resolve_g1_29dof_urdf_path() -> str:
+    """优先本地 g1_description，否则尝试 UNITREE_ROS_DIR。"""
+    if os.path.isfile(G1_29DOF_URDF_PATH):
+        return G1_29DOF_URDF_PATH
+    fallback = os.path.join(UNITREE_ROS_DIR, "robots/g1_description/g1_29dof_rev_1_0.urdf")
+    if UNITREE_ROS_DIR and os.path.isfile(fallback):
+        return fallback
+    raise FileNotFoundError(
+        f"G1 URDF not found: {G1_29DOF_URDF_PATH}. "
+        "Copy unitree_ros/robots/g1_description into assets/robots/g1_description, "
+        "or set UNITREE_ROS_DIR to your unitree_ros clone."
+    )
 
 
 @configclass
@@ -93,7 +113,7 @@ class UnitreeUrdfFileCfg(sim_utils.UrdfFileCfg):
 
 UNITREE_G1_29DOF_CFG = UnitreeArticulationCfg(
     spawn=UnitreeUrdfFileCfg(
-        asset_path=f"{UNITREE_ROS_DIR}/robots/g1_description/g1_29dof_rev_1_0.urdf",
+        asset_path=_resolve_g1_29dof_urdf_path(),
     ),
     # spawn=UnitreeUsdFileCfg(
     #     usd_path=f"{UNITREE_MODEL_DIR}/G1/29dof/usd/g1_29dof_rev_1_0/g1_29dof_rev_1_0.usd",
