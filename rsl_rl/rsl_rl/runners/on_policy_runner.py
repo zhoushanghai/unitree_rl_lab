@@ -104,6 +104,15 @@ class OnPolicyRunner:
                 # Compute returns
                 self.alg.compute_returns(obs)
 
+            # 每 300 iter 追加保存线速度诊断分布（4096 env × 4 指标，同一 CSV）。
+            if self.logger.log_dir is not None and it % 300 == 0 and self.gpu_global_rank == 0:
+                try:
+                    from unitree_rl_lab.tasks.locomotion.mdp.rewards import maybe_export_lin_vel_diag_csv
+
+                    maybe_export_lin_vel_diag_csv(self.env, it, self.logger.log_dir)
+                except Exception:
+                    pass
+
             # Update policy
             loss_dict = self.alg.update()
 

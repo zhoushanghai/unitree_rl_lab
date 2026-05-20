@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-import torch
+import csv
+import os
 from typing import TYPE_CHECKING
+
+import torch
 
 try:
     from isaaclab.utils.math import quat_apply_inverse
@@ -17,6 +20,110 @@ if TYPE_CHECKING:
 """
 Joint penalties.
 """
+
+# 全 env 分布落盘：同一 CSV 追加写入，默认每 300 个 learning iteration 一次。
+LIN_VEL_DIAG_CSV_INTERVAL = 300
+LIN_VEL_DIAG_CSV_FILENAME = "lin_vel_track_dist.csv"
+
+
+def _resolve_manager_env(env_or_wrapper) -> "ManagerBasedRLEnv":
+    """从 RslRl 包装层解析出 ManagerBasedRLEnv。"""
+    env = env_or_wrapper
+    for _ in range(4):
+        if hasattr(env, "unwrapped"):
+            env = env.unwrapped
+        else:
+            break
+    return env  # type: ignore[return-value]
+
+
+def _stash_lin_vel_diag_snapshot(
+    env: "ManagerBasedRLEnv",
+    raw_speed: torch.Tensor,
+    apf_speed: torch.Tensor,
+    actual_speed: torch.Tensor,
+    speed_error: torch.Tensor,
+) -> None:
+    """缓存当前时刻所有 env 的标量分布（rollout 每步覆盖，保留最后一次）。"""
+    env._lin_vel_diag_snapshot = {
+        "raw_speed": raw_speed.detach().cpu(),
+        "apf_speed": apf_speed.detach().cpu(),
+        "actual_speed": actual_speed.detach().cpu(),
+        "speed_error": speed_error.detach().cpu(),
+    }
+
+
+def maybe_export_lin_vel_diag_csv(
+    env_or_wrapper,
+    learning_iteration: int,
+    log_dir: str | None,
+    interval: int = LIN_VEL_DIAG_CSV_INTERVAL,
+) -> None:
+    """将最近一次 snapshot 的 4096 env 分布追加到同一 CSV。"""
+    if log_dir is None or learning_iteration % interval != 0:
+        return
+
+    env = _resolve_manager_env(env_or_wrapper)
+    snapshot = getattr(env, "_lin_vel_diag_snapshot", None)
+    if snapshot is None:
+        return
+
+    os.makedirs(log_dir, exist_ok=True)
+    csv_path = os.path.join(log_dir, LIN_VEL_DIAG_CSV_FILENAME)
+    write_header = not os.path.exists(csv_path)
+
+    num_envs = snapshot["raw_speed"].shape[0]
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(
+                [
+                    "iteration",
+                    "env_id",
+                    "cmd_speed_raw",
+                    "cmd_speed_apf",
+                    "actual_speed",
+                    "speed_error",
+                ]
+            )
+        for env_id in range(num_envs):
+            writer.writerow(
+                [
+                    learning_iteration,
+                    env_id,
+                    float(snapshot["raw_speed"][env_id]),
+                    float(snapshot["apf_speed"][env_id]),
+                    float(snapshot["actual_speed"][env_id]),
+                    float(snapshot["speed_error"][env_id]),
+                ]
+            )
+
+
+def _log_lin_vel_track_means(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    raw_cmd_b: torch.Tensor,
+    apf_cmd_b: torch.Tensor,
+    body_lin_vel_b: torch.Tensor,
+) -> None:
+    """记录线速度跟踪四类量的 batch 均值（原始/APF/实际/误差）。"""
+    raw_speed = torch.linalg.norm(raw_cmd_b[:, :2], dim=1)
+    apf_speed = torch.linalg.norm(apf_cmd_b[:, :2], dim=1)
+    actual_speed = torch.linalg.norm(body_lin_vel_b[:, :2], dim=1)
+    # 与 reward 一致：误差按 APF 目标速度计算。
+    speed_error = torch.linalg.norm(apf_cmd_b[:, :2] - body_lin_vel_b[:, :2], dim=1)
+
+    if not hasattr(env, "extras") or env.extras is None:
+        env.extras = {}
+    if "log" not in env.extras:
+        env.extras["log"] = {}
+    log = env.extras["log"]
+    log["diag/track_lin/mean_cmd_speed_raw"] = raw_speed.mean()
+    log["diag/track_lin/mean_cmd_speed_apf"] = apf_speed.mean()
+    log["diag/track_lin/mean_actual_speed"] = actual_speed.mean()
+    log["diag/track_lin/mean_speed_error"] = speed_error.mean()
+    # 同步缓存全 env 分布，供每 300 iter 落盘 CSV。
+    _stash_lin_vel_diag_snapshot(env, raw_speed, apf_speed, actual_speed, speed_error)
 
 
 def _get_command_for_reward(env: ManagerBasedRLEnv, command_name: str, use_apf_command: bool) -> torch.Tensor:
@@ -59,8 +166,14 @@ def track_lin_vel_xy_yaw_frame_exp_apf(
 ) -> torch.Tensor:
     """线速度跟踪奖励（exp），可切换到 APF 后命令作为目标速度。"""
     asset: RigidObject = env.scene[asset_cfg.name]
+    body_lin_vel_b = asset.data.root_lin_vel_b
+    # 原始采样命令 vs APF 后命令（reward 跟踪目标）vs 实际机体系速度。
+    command_term = env.command_manager.get_term(command_name)
+    raw_cmd_b = command_term.vel_command_b
     cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=use_apf_command)
-    lin_vel_error = torch.sum(torch.square(cmd[:, :2] - asset.data.root_lin_vel_b[:, :2]), dim=1)
+    _log_lin_vel_track_means(env, command_name, raw_cmd_b, cmd, body_lin_vel_b)
+
+    lin_vel_error = torch.sum(torch.square(cmd[:, :2] - body_lin_vel_b[:, :2]), dim=1)
     return torch.exp(-lin_vel_error / (std * std))
 
 
