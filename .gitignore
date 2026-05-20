@@ -68,8 +68,15 @@ datasets
 *.pt
 *.obj
 *.mtl
-*.STL
 **/env.yaml
+
+# Mesh binaries（默认不提交；G1 本地描述包见下方例外）
+**/*.STL
+**/*.stl
+
+# G1 训练用 URDF + meshes（bundled，不依赖 unitree_ros）
+!source/unitree_rl_lab/unitree_rl_lab/assets/robots/g1_description/
+!source/unitree_rl_lab/unitree_rl_lab/assets/robots/g1_description/**
 
 # Mimic
 *.npz
