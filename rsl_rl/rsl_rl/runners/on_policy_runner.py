@@ -29,6 +29,12 @@ class OnPolicyRunner:
         self.cfg = train_cfg
         self.device = device
 
+        # Store log_dir on the environment so curriculum/rewards can access it if needed
+        if hasattr(self.env, "unwrapped"):
+            self.env.unwrapped.log_dir = log_dir
+        else:
+            self.env.log_dir = log_dir
+
         # Setup multi-GPU training if enabled
         self._configure_multi_gpu()
 
@@ -77,6 +83,11 @@ class OnPolicyRunner:
         start_it = self.current_learning_iteration
         total_it = start_it + num_learning_iterations
         for it in range(start_it, total_it):
+            self.current_learning_iteration = it
+            if hasattr(self.env, "unwrapped"):
+                self.env.unwrapped.current_learning_iteration = it
+            else:
+                self.env.current_learning_iteration = it
             start = time.time()
             # Rollout
             with torch.inference_mode():

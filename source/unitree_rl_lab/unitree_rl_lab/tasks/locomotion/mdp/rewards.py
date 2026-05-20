@@ -43,6 +43,7 @@ def _stash_lin_vel_diag_snapshot(
     apf_speed: torch.Tensor,
     actual_speed: torch.Tensor,
     speed_error: torch.Tensor,
+    tracking_reward: torch.Tensor,
 ) -> None:
     """缓存当前时刻所有 env 的标量分布（rollout 每步覆盖，保留最后一次）。
 
@@ -53,6 +54,7 @@ def _stash_lin_vel_diag_snapshot(
         "apf_speed": apf_speed.detach(),
         "actual_speed": actual_speed.detach(),
         "speed_error": speed_error.detach(),
+        "tracking_reward": tracking_reward.detach(),
     }
 
 
@@ -75,7 +77,7 @@ def maybe_export_lin_vel_diag_csv(
     csv_path = os.path.join(log_dir, LIN_VEL_DIAG_CSV_FILENAME)
     write_header = not os.path.exists(csv_path)
 
-    # 导出时一次性搬到 CPU：(num_envs, 4)，仅触发一次 GPU 同步。
+    # 导出时一次性搬到 CPU：(num_envs, 5)，仅触发一次 GPU 同步。
     values_cpu = (
         torch.stack(
             (
@@ -83,6 +85,7 @@ def maybe_export_lin_vel_diag_csv(
                 snapshot["apf_speed"],
                 snapshot["actual_speed"],
                 snapshot["speed_error"],
+                snapshot["tracking_reward"],
             ),
             dim=1,
         )
@@ -101,11 +104,12 @@ def maybe_export_lin_vel_diag_csv(
                     "cmd_speed_apf",
                     "actual_speed",
                     "speed_error",
+                    "tracking_reward",
                 ]
             )
         for env_id in range(num_envs):
-            raw_v, apf_v, act_v, err_v = values_cpu[env_id]
-            writer.writerow([learning_iteration, env_id, raw_v, apf_v, act_v, err_v])
+            raw_v, apf_v, act_v, err_v, r_v = values_cpu[env_id]
+            writer.writerow([learning_iteration, env_id, raw_v, apf_v, act_v, err_v, r_v])
 
 
 def _log_lin_vel_track_means(
@@ -121,6 +125,8 @@ def _log_lin_vel_track_means(
     actual_speed = torch.linalg.norm(body_lin_vel_b[:, :2], dim=1)
     # 与 reward 一致：误差按 APF 目标速度计算。
     speed_error = torch.linalg.norm(apf_cmd_b[:, :2] - body_lin_vel_b[:, :2], dim=1)
+    # 同步计算线速度跟踪 reward
+    tracking_reward = torch.exp(-torch.square(speed_error) / 0.25)
 
     if not hasattr(env, "extras") or env.extras is None:
         env.extras = {}
@@ -131,8 +137,9 @@ def _log_lin_vel_track_means(
     log["diag/track_lin/mean_cmd_speed_apf"] = apf_speed.mean()
     log["diag/track_lin/mean_actual_speed"] = actual_speed.mean()
     log["diag/track_lin/mean_speed_error"] = speed_error.mean()
+    log["diag/track_lin/mean_tracking_reward"] = tracking_reward.mean()
     # 缓存全 env 分布（GPU 上覆盖），供每 300 iter 落盘 CSV。
-    _stash_lin_vel_diag_snapshot(env, raw_speed, apf_speed, actual_speed, speed_error)
+    _stash_lin_vel_diag_snapshot(env, raw_speed, apf_speed, actual_speed, speed_error, tracking_reward)
 
 
 def _get_command_for_reward(env: ManagerBasedRLEnv, command_name: str, use_apf_command: bool) -> torch.Tensor:
