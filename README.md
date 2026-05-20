@@ -161,7 +161,7 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name GRU \
-  --run_name collision-point-gruonly  \
+  --run_name test  \
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_19-29-58_collision-point-gruonly/model_4800.pt
 ```
 
