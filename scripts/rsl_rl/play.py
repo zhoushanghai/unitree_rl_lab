@@ -67,6 +67,12 @@ parser.add_argument(
     default=1,
     help="Refresh panel every N simulation steps.",
 )
+parser.add_argument(
+    "--disable_apf_assist_force",
+    action="store_true",
+    default=False,
+    help="Disable APF assist force only during play.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -153,6 +159,14 @@ def main():
         use_fabric=not args_cli.disable_fabric,
         entry_point_key="play_env_cfg_entry_point",
     )
+    # 仅在 play 中禁用 APF 辅助力：不修改训练默认配置。
+    if args_cli.disable_apf_assist_force:
+        if hasattr(env_cfg, "events") and hasattr(env_cfg.events, "apply_apf_assist_force"):
+            env_cfg.events.apply_apf_assist_force.params["k_assist"] = 0.0
+            env_cfg.events.apply_apf_assist_force.params["force_max_n"] = 0.0
+            env_cfg.events.apply_apf_assist_force.params["alpha_init"] = 0.0
+            env_cfg.events.apply_apf_assist_force.params["alpha_min"] = 0.0
+            print("[INFO] APF assist force disabled for play (--disable_apf_assist_force).")
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, version("rsl-rl-lib"))
 
