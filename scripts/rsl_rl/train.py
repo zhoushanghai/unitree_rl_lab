@@ -143,17 +143,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.seed = seed
         agent_cfg.seed = seed
 
-    # specify directory for logging experiments
-    log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
-    log_root_path = os.path.abspath(log_root_path)
+    # 日志目录：logs/<experiment_name>/<timestamp>[_run_name]/（不再使用 logs/rsl_rl/ 前缀）
+    experiment_name = agent_cfg.experiment_name or args_cli.task
+    log_root_path = os.path.abspath(os.path.join("logs", experiment_name))
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
-    # specify directory for logging runs: {time-stamp}_{run_name}
-    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # This way, the Ray Tune workflow can extract experiment name.
-    print(f"Exact experiment name requested from command line: {log_dir}")
+    # 单次 run：时间戳目录；若指定 run_name 则追加后缀
+    run_dir = datetime.now().strftime("%m%d_%H%M")
+    print(f"Exact run directory name: {run_dir}")
     if agent_cfg.run_name:
-        log_dir += f"_{agent_cfg.run_name}"
-    log_dir = os.path.join(log_root_path, log_dir)
+        run_dir += f"_{agent_cfg.run_name}"
+    log_dir = os.path.join(log_root_path, run_dir)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
