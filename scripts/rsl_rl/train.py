@@ -144,7 +144,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.seed = seed
 
     # 日志目录：logs/<experiment_name>/<timestamp>[_run_name]/（不再使用 logs/rsl_rl/ 前缀）
-    experiment_name = agent_cfg.experiment_name or args_cli.task
+    experiment_name = agent_cfg.experiment_name
     log_root_path = os.path.abspath(os.path.join("logs", experiment_name))
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # 单次 run：时间戳目录；若指定 run_name 则追加后缀

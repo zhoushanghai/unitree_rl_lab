@@ -157,7 +157,7 @@ def main():
     agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, version("rsl-rl-lib"))
 
     # specify directory for logging experiments
-    experiment_name = agent_cfg.experiment_name or args_cli.task
+    experiment_name = agent_cfg.experiment_name
     log_root_path = os.path.join("logs", experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Loading experiment from directory: {log_root_path}")
