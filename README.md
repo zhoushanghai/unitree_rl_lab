@@ -176,5 +176,7 @@ play
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_23-00-14_collision-point-gruonly/model_15300.pt
 ```
 
+```
+python scripts/plot_all.py --log_dir logs/GRU/0521_1553_can-go_to_nospeed
 
-logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-17_22-37-08_test1——1input/model_14000.pt
+```

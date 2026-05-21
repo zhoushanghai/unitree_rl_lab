@@ -1,5 +1,6 @@
 import os
 import argparse
+import json
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -60,8 +61,9 @@ def save_and_copy(fig, filename, workspace_dir, artifact_dir, dpi=150):
         artifact_path = os.path.join(artifact_dir, filename)
         fig.savefig(artifact_path, dpi=dpi, bbox_inches='tight')
 
-def plot_tensorboard_summary(log_dir, workspace_dir, artifact_dir):
-    tb_data = parse_tfevents(log_dir)
+def plot_tensorboard_summary(log_dir, workspace_dir, artifact_dir, tb_data=None):
+    if tb_data is None:
+        tb_data = parse_tfevents(log_dir)
     if not tb_data:
         print("-> No TensorBoard events found or parsing failed. Skipping TB summary plot.")
         return
@@ -318,6 +320,145 @@ def plot_curriculum_vel_tracking(csv_path, workspace_dir, artifact_dir):
     print(f"-> Generated {len(iterations)} curriculum upgrade tracking plots.")
 
 
+def generate_html_visualizer(log_dir, tb_data=None):
+    """
+    Generates a self-contained interactive HTML visualizer for rewards.
+    """
+    if tb_data is None:
+        tb_data = parse_tfevents(log_dir)
+        
+    if not tb_data:
+        print("-> No TensorBoard data available. Skipping HTML generation.")
+        return
+        
+    # Filter and format reward tags starting with 'Episode_Reward/'
+    reward_data = {}
+    for tag, df in tb_data.items():
+        if tag.startswith('Episode_Reward/'):
+            # Convert series to list, replacing inf/nan with None (JSON null)
+            clean_df = df.replace([np.inf, -np.inf], np.nan)
+            steps = clean_df['step'].tolist()
+            values = [None if pd.isna(v) else v for v in clean_df['value'].tolist()]
+            
+            reward_data[tag] = {
+                'steps': steps,
+                'values': values
+            }
+            
+    if not reward_data:
+        print("-> No 'Episode_Reward/' tags found. Skipping HTML generation.")
+        return
+        
+    html_template = """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Interactive Reward Progression</title>
+    <!-- Load Plotly.js from CDN -->
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', 'DejaVu Sans', Arial, sans-serif;
+            margin: 20px;
+            background-color: #f8f9fa;
+            color: #333;
+        }
+        #chart {
+            width: 100%;
+            height: 85vh;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        h2 {
+            margin-bottom: 5px;
+            color: #2c3e50;
+        }
+        p {
+            color: #7f8c8d;
+            margin-top: 0;
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+    </style>
+</head>
+<body>
+    <h2>Reward Progression: Episode Reward Components</h2>
+    <p>这是一个交互式图表。你可以进行缩放、拖拽，也可以点击右侧图例来显示/隐藏特定曲线。</p>
+    
+    <div id="chart"></div>
+    
+    <script>
+        // Inlined reward data
+        const rawData = {raw_data_placeholder};
+        
+        // Vibrant color palette
+        const colors = [
+            '#2E5BFF', '#FF3B30', '#34C759', '#FF9500', '#AF52DE', 
+            '#5AC8FA', '#FFCC00', '#FF2D55', '#5856D6', '#00C7BE',
+            '#E65100', '#004D40', '#880E4F', '#1A237E', '#3E2723',
+            '#006064', '#F57F17', '#1B5E20', '#4A148C', '#B71C1C',
+            '#01579B', '#263238', '#A2845E', '#7F7F7F'
+        ];
+        
+        // Render chart using Plotly
+        function renderChart(data) {
+            const traces = [];
+            let idx = 0;
+            for (const [tag, content] of Object.entries(data)) {
+                traces.push({
+                    x: content.steps,
+                    y: content.values,
+                    mode: 'lines',
+                    name: tag.replace('Episode_Reward/', ''),
+                    line: { width: 1.5, color: colors[idx % colors.length] },
+                    hoverinfo: 'name+x+y'
+                });
+                idx++;
+            }
+            
+            const layout = {
+                xaxis: {
+                    title: 'Iteration / Steps',
+                    gridcolor: '#f1f5f9',
+                    zeroline: false
+                },
+                yaxis: {
+                    title: 'Reward Value',
+                    gridcolor: '#f1f5f9',
+                    zeroline: false
+                },
+                hovermode: 'closest',
+                margin: { r: 250, t: 30, b: 50, l: 60 },
+                legend: {
+                    x: 1.02,
+                    y: 1,
+                    bordercolor: '#e2e8f0',
+                    borderwidth: 1
+                },
+                plot_bgcolor: 'white',
+                paper_bgcolor: 'white'
+            };
+            
+            Plotly.newPlot('chart', traces, layout, {responsive: true});
+        }
+        
+        renderChart(rawData);
+    </script>
+</body>
+</html>"""
+    
+    html_content = html_template.replace("{raw_data_placeholder}", json.dumps(reward_data))
+    
+    html_path = os.path.join(log_dir, "episode_rewards.html")
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+        
+    print(f"-> Generated self-contained visualizer: {html_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Unified RL Log Visualization Skill")
     parser.add_argument('--log_dir', type=str, required=True, help='Path to the log directory containing events and CSVs.')
@@ -333,14 +474,20 @@ def main():
         
     print(f"=== Starting RL Visualizations for {os.path.basename(log_dir)} ===")
     
+    # Pre-parse TensorBoard events once to reuse
+    tb_data = parse_tfevents(log_dir)
+    
     # 1. Plot overall training metrics from TensorBoard
-    plot_tensorboard_summary(log_dir, log_dir, artifact_dir)
+    plot_tensorboard_summary(log_dir, log_dir, artifact_dir, tb_data=tb_data)
     
     # 2. Plot detailed tracking metrics from lin_vel_track_dist.csv
     plot_vel_tracking_dist(os.path.join(log_dir, "lin_vel_track_dist.csv"), log_dir, artifact_dir)
     
     # 3. Plot curriculum upgrade environments tracking metrics
     plot_curriculum_vel_tracking(os.path.join(log_dir, "curriculum_upgrade_vel_track.csv"), log_dir, artifact_dir)
+    
+    # 4. Generate interactive HTML rewards visualizer
+    generate_html_visualizer(log_dir, tb_data=tb_data)
     
     print("=== All visualizations completed successfully! ===")
 
