@@ -3,9 +3,18 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-csv_path = '/home/hz/proprioception/unitree_rl_lab/logs/unitree_g1_29dof_velocity_gru/0520_2256_no_speed/lin_vel_track_dist.csv'
-workspace_out_dir = '/home/hz/proprioception/unitree_rl_lab/logs/unitree_g1_29dof_velocity_gru/0520_2256_no_speed'
-artifact_out_dir = '/home/hz/.gemini/antigravity-ide/brain/607935ba-02bb-45d6-831d-6a89848daeb2'
+import argparse
+
+# Setup argument parser
+parser = argparse.ArgumentParser(description="Plot linear velocity tracking and reward distribution.")
+parser.add_argument('--csv_path', type=str, default='/home/hz/proprioception/unitree_rl_lab/logs/unitree_g1_29dof_velocity_gru/0520_2256_no_speed/lin_vel_track_dist.csv', help='Path to the tracking distribution CSV file.')
+parser.add_argument('--workspace_out_dir', type=str, default='/home/hz/proprioception/unitree_rl_lab/logs/unitree_g1_29dof_velocity_gru/0520_2256_no_speed', help='Workspace directory to save output plots.')
+parser.add_argument('--artifact_out_dir', type=str, default='/home/hz/.gemini/antigravity-ide/brain/607935ba-02bb-45d6-831d-6a89848daeb2', help='Artifact directory to save duplicate plots.')
+
+args = parser.parse_args()
+csv_path = args.csv_path
+workspace_out_dir = args.workspace_out_dir
+artifact_out_dir = args.artifact_out_dir
 
 # Ensure directories exist
 os.makedirs(workspace_out_dir, exist_ok=True)
