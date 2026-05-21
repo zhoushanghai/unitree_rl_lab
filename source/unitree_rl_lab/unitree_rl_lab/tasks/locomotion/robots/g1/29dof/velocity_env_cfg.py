@@ -397,12 +397,12 @@ class RewardsCfg:
         # 关键点：reward 跟踪 APF 后目标速度；原始命令保持不变给模型观测使用。
         func=mdp.track_lin_vel_xy_yaw_frame_exp_apf,
         weight=1.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.5), "use_apf_command": True},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp_apf,
         weight=0.5,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.5), "use_apf_command": True},
     )
 
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
