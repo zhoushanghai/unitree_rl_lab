@@ -223,22 +223,22 @@ class EventCfg:
     # - 瞬移目标优先取“当前平面速度方向前方 0.8m + 左右随机偏移”；
     # - 低速时回退到机身前向，侧向偏移仍生效；
     # - 事件函数内部打标记，保证“每周期每 env 只触发一次”。
-    spawn_obstacle_forward_once = EventTerm(
-        func=mdp.spawn_obstacle_forward_once,
-        mode="interval",
-        interval_range_s=(0.02, 0.02),
-        params={
-            "forward_offset_m": 0.8,
-            "lateral_offset_range_m": (-0.2, 0.2),
-            "min_speed_for_velocity_dir": 0.05,
-            "obstacle_half_height_m": 0.5,
-            "delay_range_s": (1.0, 4.0),
-            "command_refresh_interval_s": 10.0,
-            "stash_z_offset_m": -5.0,
-            "asset_cfg": SceneEntityCfg("obstacle"),
-            "robot_cfg": SceneEntityCfg("robot"),
-        },
-    )
+    # spawn_obstacle_forward_once = EventTerm(
+    #     func=mdp.spawn_obstacle_forward_once,
+    #     mode="interval",
+    #     interval_range_s=(0.02, 0.02),
+    #     params={
+    #         "forward_offset_m": 0.8,
+    #         "lateral_offset_range_m": (-0.2, 0.2),
+    #         "min_speed_for_velocity_dir": 0.05,
+    #         "obstacle_half_height_m": 0.5,
+    #         "delay_range_s": (1.0, 4.0),
+    #         "command_refresh_interval_s": 10.0,
+    #         "stash_z_offset_m": -5.0,
+    #         "asset_cfg": SceneEntityCfg("obstacle"),
+    #         "robot_cfg": SceneEntityCfg("robot"),
+    #     },
+    # )
     # interval 高频记录：从障碍专用 contact sensor 更新碰撞点缓存。
     # 这里只做检测与记录，不施加 APF、不改速度命令。
     update_obstacle_collision_points = EventTerm(
@@ -559,9 +559,10 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
             self.apf.no_contact_delta_decay_factor
         )
         # 将障碍刷新周期与命令重采样周期对齐，满足“命令刷新后障碍也刷新”的需求。
-        self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
-            self.commands.base_velocity.resampling_time_range[0]
-        )
+        if getattr(self.events, "spawn_obstacle_forward_once", None) is not None:
+            self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
+                self.commands.base_velocity.resampling_time_range[0]
+            )
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
         # this generates terrains with increasing difficulty and is useful for training
