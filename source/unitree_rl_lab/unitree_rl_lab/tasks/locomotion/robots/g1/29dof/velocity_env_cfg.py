@@ -426,13 +426,13 @@ class RewardsCfg:
     track_lin_vel_xy = RewTerm(
         # 关键点：reward 跟踪 APF 后目标速度；原始命令保持不变给模型观测使用。
         func=mdp.track_lin_vel_xy_yaw_frame_exp_apf,
-        weight=1.0,
+        weight=2.0,
         # 缩小 std：相同误差下奖励更低，速度跟踪约束更严格。
         params={"command_name": "base_velocity", "std": math.sqrt(0.2), "use_apf_command": True},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp_apf,
-        weight=0.5,
+        weight=1.0,
         params={"command_name": "base_velocity", "std": math.sqrt(0.2), "use_apf_command": True},
     )
 
