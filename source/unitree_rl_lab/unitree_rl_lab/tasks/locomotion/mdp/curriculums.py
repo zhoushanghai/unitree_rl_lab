@@ -8,6 +8,24 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+def _is_speed_curriculum_maxed(env: ManagerBasedRLEnv, command_name: str = "base_velocity") -> bool:
+    """检查线速度课程是否已达到配置上限（与障碍门控口径一致）。"""
+    try:
+        term = env.command_manager.get_term(command_name)
+        ranges = term.cfg.ranges
+        limit_ranges = term.cfg.limit_ranges
+    except Exception:
+        return False
+
+    eps = 1.0e-6
+    return (
+        abs(float(ranges.lin_vel_x[0]) - float(limit_ranges.lin_vel_x[0])) <= eps
+        and abs(float(ranges.lin_vel_x[1]) - float(limit_ranges.lin_vel_x[1])) <= eps
+        and abs(float(ranges.lin_vel_y[0]) - float(limit_ranges.lin_vel_y[0])) <= eps
+        and abs(float(ranges.lin_vel_y[1]) - float(limit_ranges.lin_vel_y[1])) <= eps
+    )
+
+
 def lin_vel_cmd_levels(
     env: ManagerBasedRLEnv,
     env_ids: Sequence[int],
@@ -85,6 +103,11 @@ def apf_assist_alpha_decay(
     # 惰性初始化全局 alpha：按训练全局共享，不随单个 env reset 回滚。
     if not hasattr(env, "_apf_assist_alpha"):
         env._apf_assist_alpha = torch.tensor(float(alpha_init), dtype=torch.float32, device=env.device)
+
+    # 门控：速度课程未到上限（障碍尚未开始刷出）时，不衰减 alpha。
+    if not _is_speed_curriculum_maxed(env, command_name="base_velocity"):
+        env.apf_assist_alpha = env._apf_assist_alpha
+        return env._apf_assist_alpha
 
     reward_term = env.reward_manager.get_term_cfg(reward_term_name)
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s

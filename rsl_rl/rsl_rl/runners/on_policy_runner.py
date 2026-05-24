@@ -112,7 +112,10 @@ class OnPolicyRunner:
             self.current_learning_iteration = it
 
             extra_scalars: dict[str, float] | None = None
-            snapshot = getattr(self.env, "_lin_vel_diag_snapshot", None)
+            # 诊断快照挂在底层 Isaac 环境上；RslRlVecEnvWrapper 本身通常不持有该属性。
+            # 这里优先从 wrapper 解包后的 base env 读取，避免指标被“包裹层”吞掉。
+            base_env = getattr(self.env, "unwrapped", self.env)
+            snapshot = getattr(base_env, "_lin_vel_diag_snapshot", None)
             if snapshot is not None:
                 # 统一在 runner 端做聚合，保证多 logger（TB/W&B）都能得到同名 diag 指标。
                 extra_scalars = {
