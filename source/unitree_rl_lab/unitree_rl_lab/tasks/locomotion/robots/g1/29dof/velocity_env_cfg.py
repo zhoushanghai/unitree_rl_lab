@@ -545,7 +545,7 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    # 关闭地形难度课程：不再按 terrain level 逐级提升。
     lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
     apf_assist_alpha_decay = CurrTerm(
         func=mdp.apf_assist_alpha_decay,
@@ -651,14 +651,9 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         self.events.spawn_obstacle_forward_once.params["command_refresh_interval_s"] = (
             CONFIG.obstacle_spawn.command_refresh_interval_s
         )
-        # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
-        # this generates terrains with increasing difficulty and is useful for training
-        if getattr(self.curriculum, "terrain_levels", None) is not None:
-            if self.scene.terrain.terrain_generator is not None:
-                self.scene.terrain.terrain_generator.curriculum = True
-        else:
-            if self.scene.terrain.terrain_generator is not None:
-                self.scene.terrain.terrain_generator.curriculum = False
+        # 显式关闭地形生成器课程模式，避免 terrain difficulty 逐级提升。
+        if self.scene.terrain.terrain_generator is not None:
+            self.scene.terrain.terrain_generator.curriculum = False
 
 
 @configclass

@@ -6,6 +6,24 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 
 
+def _is_speed_curriculum_maxed(env, command_name: str) -> bool:
+    """检查线速度课程是否已达到配置上限。"""
+    try:
+        term = env.command_manager.get_term(command_name)
+        ranges = term.cfg.ranges
+        limit_ranges = term.cfg.limit_ranges
+    except Exception:
+        return False
+
+    eps = 1.0e-6
+    return (
+        abs(float(ranges.lin_vel_x[0]) - float(limit_ranges.lin_vel_x[0])) <= eps
+        and abs(float(ranges.lin_vel_x[1]) - float(limit_ranges.lin_vel_x[1])) <= eps
+        and abs(float(ranges.lin_vel_y[0]) - float(limit_ranges.lin_vel_y[0])) <= eps
+        and abs(float(ranges.lin_vel_y[1]) - float(limit_ranges.lin_vel_y[1])) <= eps
+    )
+
+
 def reset_obstacle_spawn_timer_and_stash(
     env,
     env_ids: torch.Tensor,
@@ -88,6 +106,33 @@ def spawn_obstacle_forward_once(
     # interval 模式下 env_ids 由 EventManager 注入，这里直接使用传入子集。
     active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
+        return
+
+    # 门控规则：
+    # 1) 速度课程未到上限 -> 不刷障碍（直接 return）
+    # 2) 速度课程到上限后 -> 开始按原逻辑周期刷障碍
+    # 3) 只在“第一次达标”时做一次重置，避免当帧立刻刷障碍
+    curriculum_ready = _is_speed_curriculum_maxed(env, command_name=command_name)
+    # 首次进入时创建门控状态，默认关闭。
+    if not hasattr(env, "_obstacle_curriculum_gate_open"):
+        env._obstacle_curriculum_gate_open = False
+    # 仅在“未达标 -> 达标”瞬间执行一次初始化：
+    # - 重置 spawned 标记
+    # - 重采样触发延时
+    # - 同步周期索引
+    # 目的：防止刚达标时因为旧计时条件直接刷出障碍。
+    if curriculum_ready and (not env._obstacle_curriculum_gate_open):
+        t_min, t_max = delay_range_s
+        env._obstacle_spawned[:] = False
+        env._obstacle_spawn_time_s[:] = torch.empty(env.num_envs, device=env.device).uniform_(t_min, t_max)
+        env._obstacle_spawn_cycle_idx[:] = torch.floor(
+            (env.episode_length_buf.float() * env.step_dt) / max(float(command_refresh_interval_s), 1.0e-6)
+        ).long()
+        # 进入“已开门”状态，后续帧正常刷新障碍。
+        env._obstacle_curriculum_gate_open = True
+    elif not curriculum_ready:
+        # 未达标：关门并退出，不执行障碍刷新逻辑。
+        env._obstacle_curriculum_gate_open = False
         return
 
     # episode 已运行时间（秒）= step 计数 * step_dt。
