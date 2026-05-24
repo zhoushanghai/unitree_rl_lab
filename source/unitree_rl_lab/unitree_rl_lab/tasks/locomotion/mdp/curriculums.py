@@ -21,7 +21,18 @@ def lin_vel_cmd_levels(
     reward = torch.mean(env.reward_manager._episode_sums[reward_term_name][env_ids]) / env.max_episode_length_s
 
     if env.common_step_counter % env.max_episode_length == 0:
-        if reward > reward_term.weight * 0.8:
+        # 课程升级双门槛：reward 达标 + 实际速度达到当前最大指令速度的 80%。
+        current_max_speed = ranges.lin_vel_x[1]
+        snapshot = getattr(env, "_lin_vel_diag_snapshot", None)
+        if snapshot is not None and len(env_ids) > 0:
+            idx = torch.tensor(env_ids, dtype=torch.long, device=env.device)
+            mean_actual_speed = snapshot["actual_speed"][idx].mean().item()
+        else:
+            # 未记录诊断快照时，回退为只看 reward，避免阻塞课程。
+            mean_actual_speed = current_max_speed
+
+        speed_threshold_met = mean_actual_speed >= current_max_speed * 0.8
+        if reward > reward_term.weight * 0.8 and speed_threshold_met:
             delta_command = torch.tensor([-0.1, 0.1], device=env.device)
             ranges.lin_vel_x = torch.clamp(
                 torch.tensor(ranges.lin_vel_x, device=env.device) + delta_command,

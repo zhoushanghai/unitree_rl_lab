@@ -179,9 +179,10 @@ class EventCfg:
         mode="reset",
         params={
             "pose_range": {"x": (-0.5, 0.5), "y": (-0.5, 0.5), "yaw": (-3.14, 3.14)},
+            # reset 初始线速度加入扰动，增强对起步偏差的鲁棒性。
             "velocity_range": {
-                "x": (0.0, 0.0),
-                "y": (0.0, 0.0),
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
                 "z": (0.0, 0.0),
                 "roll": (0.0, 0.0),
                 "pitch": (0.0, 0.0),
@@ -326,11 +327,12 @@ class CommandsCfg:
         rel_heading_envs=1.0,
         heading_command=False,
         debug_vis=True,
+        # 初始课程放宽 x 方向速度采样范围，让训练更早覆盖中速段。
         ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.1, 0.1), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
+            lin_vel_x=(-0.5, 0.5), lin_vel_y=(-0.1, 0.1), ang_vel_z=(-0.1, 0.1)
         ),
         limit_ranges=mdp.UniformLevelVelocityCommandCfg.Ranges(
-            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.3, 0.3), ang_vel_z=(-0.2, 0.2)
+            lin_vel_x=(-0.5, 1.0), lin_vel_y=(-0.5, 0.5), ang_vel_z=(-0.2, 0.2)
         ),
     )
 
@@ -425,12 +427,13 @@ class RewardsCfg:
         # 关键点：reward 跟踪 APF 后目标速度；原始命令保持不变给模型观测使用。
         func=mdp.track_lin_vel_xy_yaw_frame_exp_apf,
         weight=1.0,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
+        # 缩小 std：相同误差下奖励更低，速度跟踪约束更严格。
+        params={"command_name": "base_velocity", "std": math.sqrt(0.2), "use_apf_command": True},
     )
     track_ang_vel_z = RewTerm(
         func=mdp.track_ang_vel_z_exp_apf,
         weight=0.5,
-        params={"command_name": "base_velocity", "std": math.sqrt(0.25), "use_apf_command": True},
+        params={"command_name": "base_velocity", "std": math.sqrt(0.2), "use_apf_command": True},
     )
 
     alive = RewTerm(func=mdp.is_alive, weight=0.15)
