@@ -160,9 +160,10 @@ CUDA_VISIBLE_DEVICES=1 ./unitree_rl_lab.sh -t \
   --num_envs 4096 \
   --seed 42 \
   --max_iterations 5000000 \
-  --experiment_name GRU \
-  --run_name collision-point-gruonly  \
-  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity_gru/2026-05-18_19-29-58_collision-point-gruonly/model_4800.pt
+  --experiment_name APF \
+  --run_name first-test  \
+  --logger wandb --log_project_name APF \
+  --checkpoint logs/GRU/0523_2010_0.5start-0.2std/model_21600.pt
 ```
 
 play

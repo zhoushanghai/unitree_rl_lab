@@ -59,9 +59,24 @@ def track_lin_vel_xy_yaw_frame_exp_apf(
 ) -> torch.Tensor:
     """线速度跟踪奖励（exp），可切换到 APF 后命令作为目标速度。"""
     asset: RigidObject = env.scene[asset_cfg.name]
-    cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=use_apf_command)
-    lin_vel_error = torch.sum(torch.square(cmd[:, :2] - asset.data.root_lin_vel_b[:, :2]), dim=1)
-    return torch.exp(-lin_vel_error / (std * std))
+    # 同时记录 raw/APF 两套目标速度，便于在日志中对齐观察“命令→执行”误差链路。
+    raw_cmd = env.command_manager.get_command(command_name)
+    apf_cmd = _get_command_for_reward(env, command_name=command_name, use_apf_command=True)
+    cmd = apf_cmd if use_apf_command else raw_cmd
+
+    actual_lin_vel_xy = asset.data.root_lin_vel_b[:, :2]
+    lin_vel_error_sq = torch.sum(torch.square(cmd[:, :2] - actual_lin_vel_xy), dim=1)
+    tracking_reward = torch.exp(-lin_vel_error_sq / (std * std))
+
+    # 缓存每个并行环境的诊断量；runner 会聚合成 diag/track_lin/* 标量写入 TensorBoard/W&B。
+    env._lin_vel_diag_snapshot = {
+        "raw_speed": torch.linalg.norm(raw_cmd[:, :2], dim=1).detach(),
+        "apf_speed": torch.linalg.norm(apf_cmd[:, :2], dim=1).detach(),
+        "actual_speed": torch.linalg.norm(actual_lin_vel_xy, dim=1).detach(),
+        "speed_error": torch.sqrt(lin_vel_error_sq).detach(),
+        "tracking_reward": tracking_reward.detach(),
+    }
+    return tracking_reward
 
 
 def track_ang_vel_z_exp_apf(

@@ -111,6 +111,18 @@ class OnPolicyRunner:
             learn_time = stop - start
             self.current_learning_iteration = it
 
+            extra_scalars: dict[str, float] | None = None
+            snapshot = getattr(self.env, "_lin_vel_diag_snapshot", None)
+            if snapshot is not None:
+                # 统一在 runner 端做聚合，保证多 logger（TB/W&B）都能得到同名 diag 指标。
+                extra_scalars = {
+                    "diag/track_lin/mean_cmd_speed_raw": float(snapshot["raw_speed"].mean().item()),
+                    "diag/track_lin/mean_cmd_speed_apf": float(snapshot["apf_speed"].mean().item()),
+                    "diag/track_lin/mean_actual_speed": float(snapshot["actual_speed"].mean().item()),
+                    "diag/track_lin/mean_speed_error": float(snapshot["speed_error"].mean().item()),
+                    "diag/track_lin/mean_tracking_reward": float(snapshot["tracking_reward"].mean().item()),
+                }
+
             # Log information
             self.logger.log(
                 it=it,
@@ -122,6 +134,7 @@ class OnPolicyRunner:
                 learning_rate=self.alg.learning_rate,
                 action_std=self.alg.get_policy().output_std,
                 rnd_weight=self.alg.rnd.weight if self.cfg["algorithm"]["rnd_cfg"] else None,
+                extra_scalars=extra_scalars,
             )
 
             # Save model
