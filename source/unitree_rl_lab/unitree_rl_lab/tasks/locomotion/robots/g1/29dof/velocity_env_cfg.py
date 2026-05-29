@@ -2,7 +2,7 @@ import math
 
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -63,6 +63,18 @@ class RobotSceneCfg(InteractiveSceneCfg):
     )
     # robots
     robot: ArticulationCfg = ROBOT_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+    # 障碍：出现时机与位置由 EventCfg 控制，初始放地下避免挡路。
+    obstacle = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Obstacle",
+        spawn=sim_utils.CuboidCfg(
+            size=(0.3, 0.3, 1.6),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            mass_props=sim_utils.MassPropertiesCfg(mass=80.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.5, 0.8)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, -5.0)),
+    )
 
     # sensors
     height_scanner = RayCasterCfg(
@@ -146,8 +158,33 @@ class EventCfg:
             "velocity_range": (-1.0, 1.0),
         },
     )
+    reset_obstacle_spawn = EventTerm(
+        func=mdp.reset_obstacle_spawn_timer_and_stash,
+        mode="reset",
+        params={
+            "delay_range_s": (2.0, 6.0),
+            "asset_cfg": SceneEntityCfg("obstacle"),
+            "stash_z_offset_m": -5.0,
+        },
+    )
 
     # interval
+    spawn_obstacle_forward_once = EventTerm(
+        func=mdp.spawn_obstacle_forward_once,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "forward_offset_m": 0.5,
+            "lateral_offset_range_m": (-0.3, 0.3),
+            "min_speed_for_velocity_dir": 0.05,
+            "obstacle_half_height_m": 0.8,
+            "delay_range_s": (2.0, 6.0),
+            "command_refresh_interval_s": 10.0,
+            "stash_z_offset_m": -5.0,
+            "asset_cfg": SceneEntityCfg("obstacle"),
+            "robot_cfg": SceneEntityCfg("robot"),
+        },
+    )
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
