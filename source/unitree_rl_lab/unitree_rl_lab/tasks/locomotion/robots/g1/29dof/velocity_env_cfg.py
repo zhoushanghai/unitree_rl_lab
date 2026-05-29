@@ -180,6 +180,8 @@ class EventCfg:
             "obstacle_half_height_m": 0.8,
             "delay_range_s": (2.0, 6.0),
             "command_refresh_interval_s": 10.0,
+            "require_lin_vel_cmd_at_max": True,
+            "command_name": "base_velocity",
             "stash_z_offset_m": -5.0,
             "asset_cfg": SceneEntityCfg("obstacle"),
             "robot_cfg": SceneEntityCfg("robot"),
@@ -387,7 +389,7 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    terrain_levels = CurrTerm(func=mdp.terrain_levels_vel)
+    # 仅保留速度命令课程；地形课程已关闭（见 RobotEnvCfg.__post_init__）。
     lin_vel_cmd_levels = CurrTerm(mdp.lin_vel_cmd_levels)
 
 

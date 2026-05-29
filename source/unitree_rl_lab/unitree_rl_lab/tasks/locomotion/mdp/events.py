@@ -6,6 +6,39 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 
 
+def _lin_vel_cmd_curriculum_at_max(env, command_name: str = "base_velocity", atol: float = 1.0e-4) -> bool:
+    """判断速度命令课程是否已扩到 limit_ranges（lin_vel_x / lin_vel_y 均达上限）。"""
+    term = env.command_manager.get_term(command_name)
+    ranges = term.cfg.ranges
+    limits = term.cfg.limit_ranges
+    checks = (
+        (ranges.lin_vel_x[0], limits.lin_vel_x[0]),
+        (ranges.lin_vel_x[1], limits.lin_vel_x[1]),
+        (ranges.lin_vel_y[0], limits.lin_vel_y[0]),
+        (ranges.lin_vel_y[1], limits.lin_vel_y[1]),
+    )
+    return all(abs(cur - lim) <= atol for cur, lim in checks)
+
+
+def _stash_obstacle_underground(
+    env,
+    env_ids: torch.Tensor,
+    obstacle: RigidObject,
+    stash_z_offset_m: float,
+):
+    """将指定 env 的障碍藏到地下并清零速度。"""
+    if env_ids.numel() == 0:
+        return
+    device = env.device
+    root_state = obstacle.data.default_root_state[env_ids].clone()
+    root_state[:, 0:3] = env.scene.env_origins[env_ids]
+    root_state[:, 2] += stash_z_offset_m
+    root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device).repeat(len(env_ids), 1)
+    root_state[:, 7:13] = 0.0
+    obstacle.write_root_pose_to_sim(root_state[:, 0:7], env_ids=env_ids)
+    obstacle.write_root_velocity_to_sim(root_state[:, 7:13], env_ids=env_ids)
+
+
 def reset_obstacle_spawn_timer_and_stash(
     env,
     env_ids: torch.Tensor,
@@ -34,13 +67,7 @@ def reset_obstacle_spawn_timer_and_stash(
     t_min, t_max = delay_range_s
     env._obstacle_spawn_time_s[env_ids] = torch.empty(len(env_ids), device=device).uniform_(t_min, t_max)
 
-    root_state = obstacle.data.default_root_state[env_ids].clone()
-    root_state[:, 0:3] = env.scene.env_origins[env_ids]
-    root_state[:, 2] += stash_z_offset_m
-    root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device).repeat(len(env_ids), 1)
-    root_state[:, 7:13] = 0.0
-    obstacle.write_root_pose_to_sim(root_state[:, 0:7], env_ids=env_ids)
-    obstacle.write_root_velocity_to_sim(root_state[:, 7:13], env_ids=env_ids)
+    _stash_obstacle_underground(env, env_ids, obstacle, stash_z_offset_m)
 
 
 def spawn_obstacle_forward_once(
@@ -53,10 +80,12 @@ def spawn_obstacle_forward_once(
     delay_range_s: tuple[float, float] = (1.0, 4.0),
     command_refresh_interval_s: float = 10.0,
     stash_z_offset_m: float = -5.0,
+    require_lin_vel_cmd_at_max: bool = True,
+    command_name: str = "base_velocity",
     asset_cfg: SceneEntityCfg = SceneEntityCfg("obstacle"),
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
-    """到点后将障碍瞬移到速度方向前方（含左右随机偏移）。"""
+    """到点后将障碍瞬移到速度命令方向前方（含左右随机偏移）。"""
     if (not hasattr(env, "_obstacle_spawned")) or (not hasattr(env, "_obstacle_spawn_time_s")):
         return
     if not hasattr(env, "_obstacle_spawn_cycle_idx"):
@@ -64,6 +93,14 @@ def spawn_obstacle_forward_once(
 
     active_env_ids: torch.Tensor = env_ids
     if active_env_ids.numel() == 0:
+        return
+
+    obstacle: RigidObject = env.scene[asset_cfg.name]
+
+    # 速度课程未到最大时，障碍始终藏在地下。
+    if require_lin_vel_cmd_at_max and (not _lin_vel_cmd_curriculum_at_max(env, command_name=command_name)):
+        _stash_obstacle_underground(env, active_env_ids, obstacle, stash_z_offset_m)
+        env._obstacle_spawned[active_env_ids] = False
         return
 
     elapsed_s = env.episode_length_buf.float() * env.step_dt
@@ -82,14 +119,7 @@ def spawn_obstacle_forward_once(
         env._obstacle_spawn_time_s[changed_env_ids] = torch.empty(len(changed_env_ids), device=env.device).uniform_(
             t_min, t_max
         )
-        obstacle: RigidObject = env.scene[asset_cfg.name]
-        stash_state = obstacle.data.default_root_state[changed_env_ids].clone()
-        stash_state[:, 0:3] = env.scene.env_origins[changed_env_ids]
-        stash_state[:, 2] += stash_z_offset_m
-        stash_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=env.device).repeat(len(changed_env_ids), 1)
-        stash_state[:, 7:13] = 0.0
-        obstacle.write_root_pose_to_sim(stash_state[:, 0:7], env_ids=changed_env_ids)
-        obstacle.write_root_velocity_to_sim(stash_state[:, 7:13], env_ids=changed_env_ids)
+        _stash_obstacle_underground(env, changed_env_ids, obstacle, stash_z_offset_m)
 
     elapsed_in_cycle = elapsed_s[active_env_ids] - current_cycle.float() * cycle_dt
     to_spawn = (~env._obstacle_spawned[active_env_ids]) & (
@@ -99,12 +129,23 @@ def spawn_obstacle_forward_once(
         return
 
     spawn_env_ids = active_env_ids[to_spawn]
-    obstacle: RigidObject = env.scene[asset_cfg.name]
     robot: Articulation = env.scene[robot_cfg.name]
 
-    vel_xy = robot.data.root_lin_vel_w[spawn_env_ids, :2]
-    vel_xy_norm = torch.linalg.norm(vel_xy, dim=-1, keepdim=True)
-    vel_dir_xy = vel_xy / vel_xy_norm.clamp(min=1.0e-6)
+    # 使用速度命令（机体系 vx, vy）旋转到世界系 XY，作为障碍放置方向。
+    cmd_xy_b = env.command_manager.get_command(command_name)[spawn_env_ids, :2]
+    cmd_xy_norm = torch.linalg.norm(cmd_xy_b, dim=-1, keepdim=True)
+    cmd_dir_b = cmd_xy_b / cmd_xy_norm.clamp(min=1.0e-6)
+
+    yaw = robot.data.heading_w[spawn_env_ids]
+    cos_yaw = torch.cos(yaw)
+    sin_yaw = torch.sin(yaw)
+    cmd_dir_xy = torch.stack(
+        (
+            cos_yaw * cmd_dir_b[:, 0] - sin_yaw * cmd_dir_b[:, 1],
+            sin_yaw * cmd_dir_b[:, 0] + cos_yaw * cmd_dir_b[:, 1],
+        ),
+        dim=-1,
+    )
 
     quat_w = robot.data.root_quat_w[spawn_env_ids]
     qw, qx, qy, qz = quat_w.unbind(dim=-1)
@@ -112,8 +153,8 @@ def spawn_obstacle_forward_once(
     fwd_y = 2.0 * (qx * qy + qw * qz)
     fwd_dir_xy = torch.stack((fwd_x, fwd_y), dim=-1)
     fwd_dir_xy = fwd_dir_xy / torch.linalg.norm(fwd_dir_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
-    use_vel_dir = vel_xy_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
-    dir_xy = torch.where(use_vel_dir.unsqueeze(-1), vel_dir_xy, fwd_dir_xy)
+    use_cmd_dir = cmd_xy_norm.squeeze(-1) >= float(min_speed_for_velocity_dir)
+    dir_xy = torch.where(use_cmd_dir.unsqueeze(-1), cmd_dir_xy, fwd_dir_xy)
 
     lat_dir_xy = torch.stack((-dir_xy[:, 1], dir_xy[:, 0]), dim=-1)
     lat_dir_xy = lat_dir_xy / torch.linalg.norm(lat_dir_xy, dim=-1, keepdim=True).clamp(min=1.0e-6)
