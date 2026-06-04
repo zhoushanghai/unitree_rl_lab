@@ -8,9 +8,9 @@ Usage (inside Docker):
         --headless
 
 Output:
-    dataset/episode_00001.json, episode_00002.json, ...
+    dataset/episode_00001.npz, episode_00002.npz, ...
 
-每个 JSON 文件是一个列表，长度 = 该 episode 实际步数（最多 500 步）。
+每个 NPZ 文件保存为一个压缩的字典，其中数值类型保存为 float32 数组，碰撞列表序列化为 JSON 字符串保存。
 每步记录字段见 collision_data_collection.md。
 """
 
@@ -56,6 +56,7 @@ import json
 import math
 
 import gymnasium as gym
+import numpy as np
 import torch
 
 from rsl_rl.runners import OnPolicyRunner
@@ -309,14 +310,30 @@ def main():
                 if len(active_episodes[env_idx]) > 0:
                     saved_episodes_count += 1
                     if saved_episodes_count <= args_cli.num_episodes:
-                        filename = f"dataset/episode_{saved_episodes_count:05d}.json"
-                        with open(filename, "w") as f:
-                            json.dump(active_episodes[env_idx], f, indent=2)
+                        filename = f"dataset/episode_{saved_episodes_count:05d}.npz"
+                        
+                        episode_data = active_episodes[env_idx]
+                        npz_data = {}
+                        
+                        # 转换数值类型字段为 NumPy array
+                        numerical_keys = [
+                            "time", "command", "base_ang_vel", "projected_gravity",
+                            "joint_pos", "joint_vel", "last_action", "root_pos_w",
+                            "root_quat_w", "base_lin_vel", "joint_torques"
+                        ]
+                        for key in numerical_keys:
+                            npz_data[key] = np.array([step[key] for step in episode_data], dtype=np.float32)
+                        
+                        # 变长且包含字符串/字典的 collisions 采用 json 序列化成一个字符串保存
+                        collisions = [step["collisions"] for step in episode_data]
+                        npz_data["collisions_json"] = np.array(json.dumps(collisions))
+                        
+                        np.savez_compressed(filename, **npz_data)
 
-                        n_collision_steps = sum(1 for s in active_episodes[env_idx] if s["collisions"])
+                        n_collision_steps = sum(1 for s in episode_data if s["collisions"])
                         print(
                             f"[INFO] Episode {saved_episodes_count:4d}/{args_cli.num_episodes} | "
-                            f"env={env_idx:2d} | steps={len(active_episodes[env_idx])} | "
+                            f"env={env_idx:2d} | steps={len(episode_data)} | "
                             f"collision_steps={n_collision_steps} | saved → {filename}"
                         )
                 # 清空该环境的缓存，并开始新的一轮记录（首步为当前重置后的状态）

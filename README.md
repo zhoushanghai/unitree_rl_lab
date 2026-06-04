@@ -171,5 +171,6 @@ docker exec -it prop python scripts/rsl_rl/collect_data.py \
   --num_episodes 10000 \
   --headless
 
+python scripts/rsl_rl/npz_to_json.py --input dataset/episode_00001.npz
 
 ```

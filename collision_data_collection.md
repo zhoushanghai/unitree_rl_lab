@@ -15,10 +15,10 @@
 4. **提前重置 (Early Reset)**：如果在 10s 内机器人因严重跌倒（触发基座高度过低或姿态倾角过大等终止条件），环境会提前 Reset，并重新生成一组随机速度开始新的 10s 循环。
 5. **加载 Policy**：加载训练生成的 checkpoint 模型进行推理。
 6. **仿真运行与步进**：在每个仿真步中，读取机器人的状态、根节点位姿和传感器数据。
-7. **数据存储方式 (以轨迹/Episode 为单位单独保存 JSON)**：
+7. **数据存储方式 (以轨迹/Episode 为单位单独保存 NPZ)**：
    * 设定采集的**总条数**为 $N$ 个 Episode 轨迹（例如 100 条）。
-   * 每一个 10 秒的完整运动轨迹数据（包含 500 个决策步的感知、位姿与碰撞列表）保存为一个**独立的 JSON 文件**。
-   * 文件命名格式为：`episode_00001.json`、`episode_00002.json` 等。
+   * 每一个 10 秒的完整运动轨迹数据（包含 500 个决策步的感知、位姿与碰撞列表）保存为一个**独立的 NPZ 压缩文件**。
+   * 文件命名格式为：`episode_00001.npz`、`episode_00002.npz` 等。
    * 所有文件统一保存在项目根目录下的 **`dataset/`** 目录中。
 8. **碰撞力与受力方向过滤**：通过 `contact_forces` 传感器获取各个 Body 上的 3D 碰撞力矢量 $\mathbf{f}_{world} = [f_x, f_y, f_z]$（已配置 `filter_prim_paths_expr = ["{ENV_REGEX_NS}/Obstacle"]`，以只统计与障碍物发生的碰撞），当碰撞力大小 $\|\mathbf{f}_{world}\|_2 \ge 1.0\text{ N}$ 时，记录：
    * 碰撞发生的位置（Body 名称）
@@ -30,25 +30,25 @@
 
 ## 2. 数据采集字段表 (Data Schema Table)
 
-在每个单独的 `episode_XXXXX.json` 文件中，其顶层结构为一个 JSON 列表，列表长度等于该轨迹的实际决策步数（正常结束为 500 步，发生跌倒提前终止则少于 500 步）。列表中的每一项包含以下时间步数据：
+每个单独的 `episode_XXXXX.npz` 文件保存为一个压缩包，使用 `numpy.load` 读取后包含以下字段（每个字段是一个 NumPy 数组，时间步维度在最外层，其长度等于该轨迹的实际决策步数，正常结束为 500 步，发生跌倒提前终止则少于 500 步）：
 
 | 数据类别 (Category) | 字段名称 (Field) | 维度/格式 (Shape) | 字段说明 (Description) |
 | :--- | :--- | :--- | :--- |
-| **A. 机器人本体感知与控制信息**<br>(实机车载传感器直接可测数据) | `time` | `float` | 仿真当前的时间戳 (秒) |
-| | `command` | `[v_x, v_y, w_z]` | 目标速度指令（控制命令输入，每条轨迹内恒定） |
-| | `base_ang_vel` | `[w_x, w_y, w_z]` | 机器人基座在本体坐标系下的实际角速度 (IMU 陀螺仪，模型输入) |
-| | `projected_gravity` | `[3]` | 重力向量在本体坐标系下的投影 (IMU 倾角，模型输入) |
-| | `joint_pos` | `[29]` | 29个关节的当前角度位置 (模型输入) |
-| | `joint_vel` | `[29]` | 29个关节的当前角速度 (模型输入) |
-| | `last_action` | `[29]` | 上一步输出的关节控制动作 (模型输入) |
-| **B. 全局特权信息**<br>(仿真引擎真值，实机通常需状态估计或无法获取) | `root_pos_w` | `[3]` | 机器人 Root 在世界坐标系下的 3D 坐标 `[x, y, z]` (用于局部坐标转换) |
-| | `root_quat_w` | `[4]` | 机器人 Root 在世界坐标系下的四元数 `[w, x, y, z]` (用于局部坐标转换) |
-| | `base_lin_vel` | `[v_x, v_y, v_z]` | 机器人基座在本体坐标系下的实际线速度 (特权观测，实机无法直接测量) |
-| | `joint_torques` | `[29]` | 29个关节的当前电机实际输出力矩 (实机通常靠电流估算) |
-| **C. 碰撞信息**<br>(受力大于 1.0 N) | `collisions` | `list` | 碰撞的详细信息列表（本步若无碰撞则为空列表 `[]`，格式见下文） |
+| **A. 机器人本体感知与控制信息**<br>(实机车载传感器直接可测数据) | `time` | `(num_steps,)` | 仿真当前的时间戳 (秒) |
+| | `command` | `(num_steps, 3)` | 目标速度指令（`[v_x, v_y, w_z]`，控制命令输入，每条轨迹内恒定） |
+| | `base_ang_vel` | `(num_steps, 3)` | 机器人基座在本体坐标系下的实际角速度 (IMU 陀螺仪，模型输入) |
+| | `projected_gravity` | `(num_steps, 3)` | 重力向量在本体坐标系下的投影 (IMU 倾角，模型输入) |
+| | `joint_pos` | `(num_steps, 29)` | 29个关节的当前角度位置 (模型输入) |
+| | `joint_vel` | `(num_steps, 29)` | 29个关节的当前角速度 (模型输入) |
+| | `last_action` | `(num_steps, 29)` | 上一步输出的关节控制动作 (模型输入) |
+| **B. 全局特权信息**<br>(仿真引擎真值，实机通常需状态估计或无法获取) | `root_pos_w` | `(num_steps, 3)` | 机器人 Root 在世界坐标系下的 3D 坐标 `[x, y, z]` (用于局部坐标转换) |
+| | `root_quat_w` | `(num_steps, 4)` | 机器人 Root 在世界坐标系下的四元数 `[w, x, y, z]` (用于局部坐标转换) |
+| | `base_lin_vel` | `(num_steps, 3)` | 机器人基座在本体坐标系下的实际线速度 (特权观测，实机无法直接测量) |
+| | `joint_torques` | `(num_steps, 29)` | 29个关节的当前电机实际输出力矩 (实机通常靠电流估算) |
+| **C. 碰撞信息** | `collisions_json` | `(1,)` / `str` | 碰撞的详细信息列表，整个轨迹序列化为一个 JSON 字符串保存，通过 `json.loads` 解析后可得长度为 `num_steps` 的列表（每项格式见下文） |
 
-#### 碰撞信息列表项格式 (collisions list item)
-如果某个 Body 在当前步检测到的碰撞力 $\ge 1.0\text{ N}$，则在 `collisions` 列表中添加一项：
+#### 碰撞信息列表解析后的格式
+解析后的 list 对应每个时间步，若某步无碰撞，则为 `[]`；如果某个 Body 在当前步检测到的碰撞力 $\ge 1.0\text{ N}$，则在列表中有一项：
 ```json
 {
     "body_name": "left_ankle_roll_link",
@@ -97,31 +97,33 @@ docker exec prop /home/hz/IsaacLab/_isaac_sim/python.sh scripts/collect_data.py 
 
 ## 5. 示例读取与局部坐标系转换代码 (Local Coordinate Transformation Example)
 
-要读取并处理数据集目录下的单条轨迹 JSON 文件：
+要读取并处理数据集目录下的单条轨迹 NPZ 文件：
 
 ```python
 import json
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-# 加载并解析某一条轨迹 JSON 文件
-with open("dataset/episode_00001.json", "r") as f:
-    episode_data = json.load(f)
+# 加载并解析某一条轨迹 NPZ 文件
+data = np.load("dataset/episode_00001.npz")
+collisions = json.loads(str(data["collisions_json"]))
 
-print(f"Total steps in this episode: {len(episode_data)}")
+num_steps = len(data["time"])
+print(f"Total steps in this episode: {num_steps}")
 
-for step_idx, step_data in enumerate(episode_data):
-    if len(step_data["collisions"]) > 0:
+for step_idx in range(num_steps):
+    step_collisions = collisions[step_idx]
+    if len(step_collisions) > 0:
         # 获取机器人根节点的位置和姿态
-        root_pos = np.array(step_data["root_pos_w"])
-        root_quat = np.array(step_data["root_quat_w"])
+        root_pos = data["root_pos_w"][step_idx]       # (3,)
+        root_quat = data["root_quat_w"][step_idx]     # (4,) [w, x, y, z]
         
-        # 构造旋转矩阵
+        # 构造旋转矩阵 (scipy requires [x, y, z, w])
         q_xyzw = np.array([root_quat[1], root_quat[2], root_quat[3], root_quat[0]])
         r_world_to_body = R.from_quat(q_xyzw).inv()
         
-        print(f"Step {step_idx} (Time: {step_data['time']:.2f}s):")
-        for col in step_data["collisions"]:
+        print(f"Step {step_idx} (Time: {data['time'][step_idx]:.2f}s):")
+        for col in step_collisions:
             pos_world = np.array(col["contact_position"])
             force_world = np.array(col["contact_force_vector"])
             
