@@ -28,6 +28,9 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_SCRIPT_DIR)), "rsl_rl"))
 sys.path.insert(0, _SCRIPT_DIR)
 
+# 须在 AppLauncher 之前导入（仅 numpy，无 Isaac 依赖）
+from voxel_collision_utils import DEFAULT_MIN_CMD_SPEED  # noqa: E402
+
 
 def _existing_episode_count(dataset_dir: str) -> int:
     """扫描 dataset 目录中 episode_XXXXX.npz，返回已有最大编号（无文件则为 0）。"""
@@ -138,6 +141,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to collect.")
     parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments to run.")
     parser.add_argument("--force_threshold", type=float, default=1.0, help="Minimum contact force (N) to record.")
+    parser.add_argument(
+        "--min-cmd-speed",
+        type=float,
+        default=DEFAULT_MIN_CMD_SPEED,
+        help="Episode 开始时若 sqrt(vx^2+vy^2) 低于此值则重采样速度命令（与体素后处理 --min-cmd-speed 一致）。",
+    )
     parser.add_argument(
         "--gpu_ids",
         type=str,
@@ -273,6 +282,31 @@ def collect_step_collisions(
     return collisions
 
 
+def ensure_min_command_xy_speed(cmd_term, env_ids: list[int], min_speed: float, max_tries: int = 128) -> None:
+    """对每个 env 重复采样速度命令，直到平面线速度模长 >= min_speed。
+
+    在 episode 开始时调用即可：collect 已将 resampling_time 对齐 episode 长度，整条轨迹 command 恒定。
+    """
+    if not env_ids:
+        return
+    for _ in range(max_tries):
+        vel_xy = cmd_term.vel_command_b[env_ids, :2]
+        slow_mask = torch.linalg.norm(vel_xy, dim=-1) < min_speed
+        if not bool(slow_mask.any().item()):
+            return
+        slow_ids = [env_ids[i] for i in range(len(env_ids)) if slow_mask[i].item()]
+        cmd_term._resample_command(slow_ids)
+        cmd_term._update_command()
+    vel_xy = cmd_term.vel_command_b[env_ids, :2]
+    still_slow = torch.linalg.norm(vel_xy, dim=-1) < min_speed
+    if bool(still_slow.any().item()):
+        slow_list = [env_ids[i] for i in range(len(env_ids)) if still_slow[i].item()]
+        print(
+            f"[WARN] env {slow_list} 在 {max_tries} 次重采样后线速度仍 < {min_speed} m/s，"
+            "将按当前命令继续采集。"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -295,6 +329,8 @@ def main():
     env_cfg.episode_length_s = 10.0
     env_cfg.commands.base_velocity.ranges = env_cfg.commands.base_velocity.limit_ranges
     env_cfg.commands.base_velocity.resampling_time_range = (10.0, 10.0)
+    # 采集不接受“站立”零速命令，避免与 min-cmd-speed 重采样冲突
+    env_cfg.commands.base_velocity.rel_standing_envs = 0.0
 
     # 强制在数据采集时每次都生成障碍，不再需要“速度指令课程达到最大”的前置条件
     env_cfg.events.spawn_obstacle_forward_once.params["require_lin_vel_cmd_at_max"] = False
@@ -417,6 +453,11 @@ def main():
     # 每步决策步数 = decimation；物理 dt = sim.dt；step_dt = decimation * sim.dt
     step_dt = raw_env.step_dt
     cmd_term = raw_env.command_manager.get_term("base_velocity")
+    min_cmd_speed = args_cli.min_cmd_speed
+    print(f"[INFO] min_cmd_speed={min_cmd_speed} m/s（episode 开始时不足则重采样 command）")
+
+    # 并行环境创建后的首条 episode 也需满足线速度下限
+    ensure_min_command_xy_speed(cmd_term, list(range(num_envs)), min_cmd_speed)
 
     while saved_episodes_count < target_count:
         # --- 推理 ---
@@ -428,7 +469,7 @@ def main():
         for env_idx in range(num_envs):
             sim_time = float(raw_env.episode_length_buf[env_idx].item()) * step_dt
 
-            # 速度命令
+            # 速度命令（episode 起点已在 done 分支重采样至 >= min_cmd_speed）
             command = _to_list(cmd_term.vel_command_b[env_idx])  # [vx, vy, wz]
 
             # 本体感知
@@ -502,7 +543,9 @@ def main():
                             f"env={env_idx:2d} | steps={len(episode_data)} | "
                             f"collision_steps={n_collision_steps} | saved → {filename}"
                         )
-                # 清空该环境的缓存，并开始新的一轮记录（首步为当前重置后的状态）
+                # 新 episode：保证本段轨迹的速度命令线速度 >= min_cmd_speed
+                ensure_min_command_xy_speed(cmd_term, [env_idx], min_cmd_speed)
+                step_data["command"] = _to_list(cmd_term.vel_command_b[env_idx])
                 active_episodes[env_idx] = [step_data]
             else:
                 # 正常步，直接追加

@@ -160,7 +160,7 @@ play
 
 ```
 
-collect data（`dataset/` 已有文件时从最大编号续接；`contact_position` 来自 `contact_pos_w`）
+collect data（`dataset/` 已有文件时从最大编号续接；`contact_position` 来自 `contact_pos_w`；episode 开始时线速度小于 0.3 m/s 会重采样 command，可用 `--min-cmd-speed` 调整）
 
 ```
 docker exec -it prop python scripts/rsl_rl/collect_data.py \
@@ -189,16 +189,16 @@ process collision voxels（`dataset/` → `dataset_voxel/`，原字段 + `collis
 python scripts/rsl_rl/process_collision_voxels.py \
   --input dataset \
   --output dataset_voxel \
-  --min-cmd-speed 0.3
+  --min-cmd-speed 0.3 \
+  --tail-after-last-collision 3.0
 ```
 
 replay voxel dataset（Isaac Lab 回放 + 橙色体素占用格，需图形界面）
 
 ```
+# 同时显示 collisions_json 碰撞红点
 docker exec -it prop python scripts/rsl_rl/replay_voxel_dataset.py \
-# 可选：同时显示 collisions_json 碰撞红点
-docker exec -it prop python scripts/rsl_rl/replay_voxel_dataset.py \
-  --file dataset_voxel/episode_00009.npz \
+  --file dataset_voxel/episode_00061.npz \
   --real-time --show-contacts
 ```
 

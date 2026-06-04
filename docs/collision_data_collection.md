@@ -7,7 +7,7 @@
 ## 1. 采集流程设计 (Design Workflow)
 
 1. **单次运行周期 (10s Episode)**：每个环境的单次运行周期（Episode）固定为 **10.0 秒**（仿真频率为 50 Hz，对应 500 个决策步）。
-2. **单组随机速度控制**：在每次运行开始（Reset）时，系统会为机器人随机抽取一组目标速度指令（基于最大速度范围 `limit_ranges`）。在整个 10.0 秒的运行周期内，**该速度指令保持恒定**，不再重新采样。
+2. **单组随机速度控制**：在每次运行开始（Reset）时，系统会为机器人随机抽取一组目标速度指令（基于最大速度范围 `limit_ranges`）。若平面线速度 \(\sqrt{v_x^2+v_y^2} < 0.3\,\text{m/s}\)（含原配置中的“站立”零速），`collect_data.py` 会**重复重采样**直到 \(\ge 0.3\,\text{m/s}\)（`--min-cmd-speed`，默认 0.3；采集时 `rel_standing_envs=0`）。在整个 10.0 秒的运行周期内，**该速度指令保持恒定**，不再重新采样。
 3. **环境初始化与速度范围**：使用 `Unitree-G1-29dof-Velocity` 任务，配置采用最大随机速度范围 `limit_ranges`：
    * 前向/后向速度 $v_x \in [-0.5, 1.0] \text{ m/s}$
    * 横向移动速度 $v_y \in [-0.3, 0.3] \text{ m/s}$
@@ -68,6 +68,7 @@
 
 ```bash
 python scripts/rsl_rl/process_collision_voxels.py --input dataset --output dataset_voxel
+# 默认：cmd_xy>=0.3 保留；最后一次碰撞后 2s 截断；无碰撞 episode 丢弃
 ```
 
 ---

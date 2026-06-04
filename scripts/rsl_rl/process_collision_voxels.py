@@ -13,8 +13,12 @@ sys.path.insert(0, _SCRIPT_DIR)
 
 from voxel_collision_utils import (
     DEFAULT_MIN_CMD_SPEED,
+    DEFAULT_TAIL_AFTER_LAST_COLLISION_S,
     build_collision_voxel_sequence,
     command_xy_speed,
+    last_collision_step,
+    truncate_end_step,
+    truncate_episode_data,
 )
 
 
@@ -30,26 +34,42 @@ def process_one_episode(
     src_path: str,
     dst_path: str,
     min_cmd_speed: float,
+    tail_after_last_collision_s: float,
 ) -> dict:
-    """拷贝原 NPZ 并追加 collision_voxel；线速度不足则跳过、不写输出文件。"""
+    """拷贝原 NPZ、截断尾部、追加 collision_voxel；不合格 episode 不写入。"""
     data = dict(np.load(src_path, allow_pickle=True))
-    cmd_speed = command_xy_speed(data["command"][0])
+    steps_raw = int(data["root_pos_w"].shape[0])
+    cmd_row = data["command"][0] if np.asarray(data["command"]).ndim == 2 else data["command"]
+    cmd_speed = command_xy_speed(cmd_row)
 
-    # 整条 episode 的 command 线速度 < 阈值：直接丢弃，不进入 dataset_voxel
     if cmd_speed < min_cmd_speed:
         return {
             "skipped": True,
+            "reason": "low_cmd",
             "cmd_speed": cmd_speed,
-            "steps": int(data["root_pos_w"].shape[0]),
+            "steps": steps_raw,
         }
 
     collisions = json.loads(str(data["collisions_json"].item()))
+    last_col = last_collision_step(collisions)
+    if last_col is None:
+        return {
+            "skipped": True,
+            "reason": "no_collision",
+            "cmd_speed": cmd_speed,
+            "steps": steps_raw,
+        }
+
+    end_step = truncate_end_step(data["time"], last_col, tail_after_last_collision_s)
+    data, collisions = truncate_episode_data(data, collisions, end_step)
+
     voxels = build_collision_voxel_sequence(
         collisions,
         data["root_pos_w"],
         data["root_quat_w"],
     )
     data["collision_voxel"] = voxels
+    data["collisions_json"] = np.array(json.dumps(collisions))
 
     os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
     np.savez_compressed(dst_path, **data)
@@ -59,6 +79,8 @@ def process_one_episode(
         "skipped": False,
         "cmd_speed": cmd_speed,
         "steps": voxels.shape[0],
+        "steps_raw": steps_raw,
+        "last_collision_step": last_col,
         "occupied_steps": occupied_steps,
         "total_voxels_on": int(voxels.sum()),
     }
@@ -74,6 +96,12 @@ def main():
         default=DEFAULT_MIN_CMD_SPEED,
         help="command 线速度 sqrt(vx^2+vy^2) 低于此值的整条 episode 不写入 dataset_voxel",
     )
+    parser.add_argument(
+        "--tail-after-last-collision",
+        type=float,
+        default=DEFAULT_TAIL_AFTER_LAST_COLLISION_S,
+        help="保留「最后一次碰撞时刻 + 该秒数」内的数据，之后截断；0 表示不截断",
+    )
     args = parser.parse_args()
 
     episodes = _list_episodes(args.input)
@@ -86,19 +114,21 @@ def main():
     for src in episodes:
         name = os.path.basename(src)
         dst = os.path.join(args.output, name)
-        stats = process_one_episode(src, dst, args.min_cmd_speed)
+        stats = process_one_episode(
+            src, dst, args.min_cmd_speed, args.tail_after_last_collision
+        )
         if stats["skipped"]:
             n_skip += 1
             print(
-                f"[INFO] {name} | SKIP(low cmd, not saved) | cmd_xy={stats['cmd_speed']:.3f} | "
+                f"[INFO] {name} | SKIP({stats['reason']}, not saved) | cmd_xy={stats['cmd_speed']:.3f} | "
                 f"steps={stats['steps']}"
             )
             continue
         n_ok += 1
         print(
             f"[INFO] {name} | OK | cmd_xy={stats['cmd_speed']:.3f} | "
-            f"steps={stats['steps']} | steps_with_voxel={stats['occupied_steps']} | "
-            f"sum(voxel)={stats['total_voxels_on']}"
+            f"steps={stats['steps_raw']}->{stats['steps']} | last_col={stats['last_collision_step']} | "
+            f"steps_with_voxel={stats['occupied_steps']} | sum(voxel)={stats['total_voxels_on']}"
         )
     print(f"[INFO] Done. saved={n_ok} skipped={n_skip} -> {args.output}/")
 

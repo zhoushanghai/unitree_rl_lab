@@ -19,6 +19,7 @@
 | 水平索引 | **方式 1**：\(i, j \in [0, 19]\)，中心在格点中间 |
 | 持久化 | **不去重**：每步有效 `contact_position`（世界系）**全部追加**到列表 |
 | 线速度过滤 | \(\|v_\text{cmd}\| < 0.3\,\text{m/s}\) 的 **整条 episode 丢弃**，不写入 `dataset_voxel/`（见下） |
+| 尾部截断 | 保留至 **最后一次碰撞** 后 **2 s**（`time <= t_last + 2`），之后步全部丢弃；**无碰撞** episode 丢弃 |
 | 占用规则 | 持久化点落入体素 → 该格为 **1**，否则 **0** |
 | 输出形式 | **单独一套数据集**；每个文件 = **原始 NPZ 全部字段** + **局部体素字段**（见下） |
 | 体素坐标系 | **非**世界系裁切；碰撞点世界坐标 → 变换到 **当前步机器人局部水平系（yaw）** 后体素化 |
@@ -45,7 +46,14 @@
 - 当 **\(\|v_\text{cmd}\| < 0.3\,\text{m/s}\)**：**不生成** `dataset_voxel/episode_XXXXX.npz`（整条数据丢弃；`dataset/` 原文件保留）。
 - 当 **\(\|v_\text{cmd}\| \ge 0.3\,\text{m/s}\)**：正常后处理并写入 `dataset_voxel/`。
 
-**每步流程**（仅对通过线速度过滤的 episode）
+**尾部截断（定稿）**
+
+- 找 `collisions[t]` 非空的**最后一步** \(t_\text{last}\)。
+- 保留满足 `time[t] <= time[t_last] + 2.0` 的所有步（`collisions_json` 与各数组同步截断）。
+- **全程无碰撞**的 episode **不写入** `dataset_voxel/`。
+- 命令行：`--tail-after-last-collision 2.0`（默认 2.0）；`0` 表示不截断。
+
+**每步流程**（仅对通过过滤且截断后的 episode）
 
 ```text
 contacts_world ← 空（按 episode）
@@ -97,7 +105,7 @@ k = floor(z / 0.1)，clamp 到 [0, 14]
 
 ```bash
 python scripts/rsl_rl/process_collision_voxels.py --input dataset --output dataset_voxel
-# 可选：--min-cmd-speed 0.3
+# 可选：--min-cmd-speed 0.3 --tail-after-last-collision 2.0
 ```
 
 实现：`scripts/rsl_rl/voxel_collision_utils.py`、`scripts/rsl_rl/process_collision_voxels.py`。

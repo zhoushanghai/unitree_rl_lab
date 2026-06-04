@@ -13,6 +13,22 @@ LOCAL_XY_MAX = 1.0
 Z_MIN = 0.0
 Z_MAX = 1.5
 DEFAULT_MIN_CMD_SPEED = 0.3
+DEFAULT_TAIL_AFTER_LAST_COLLISION_S = 2.0
+
+# NPZ 中沿时间维截断的字段（第 0 维 = num_steps）
+TIME_SERIES_KEYS = (
+    "time",
+    "command",
+    "base_ang_vel",
+    "projected_gravity",
+    "joint_pos",
+    "joint_vel",
+    "last_action",
+    "root_pos_w",
+    "root_quat_w",
+    "base_lin_vel",
+    "joint_torques",
+)
 
 
 def command_xy_speed(command_row: np.ndarray) -> float:
@@ -114,6 +130,45 @@ def voxel_indices_at_pose(
         if idx is not None:
             occupied.add(idx)
     return occupied
+
+
+def last_collision_step(collisions_per_step: list) -> int | None:
+    """最后一次出现非空 collisions[t] 的步号；无碰撞返回 None。"""
+    last: int | None = None
+    for t, step_colls in enumerate(collisions_per_step):
+        if step_colls:
+            last = t
+    return last
+
+
+def truncate_end_step(time: np.ndarray, last_collision_t: int, tail_s: float) -> int:
+    """保留 time <= time[last_collision_t] + tail_s 的步，返回 end（切片为 [:end]）。"""
+    if tail_s <= 0.0:
+        return int(time.shape[0])
+    cutoff = float(time[last_collision_t]) + tail_s
+    end = int(np.searchsorted(np.asarray(time, dtype=np.float64), cutoff, side="right"))
+    return max(1, min(end, int(time.shape[0])))
+
+
+def truncate_episode_data(
+    data: dict,
+    collisions_per_step: list,
+    end_step: int,
+) -> tuple[dict, list]:
+    """按 end_step 截断轨迹字段与 collisions 列表。"""
+    num_steps = int(data["time"].shape[0])
+    end_step = int(np.clip(end_step, 1, num_steps))
+    out = {}
+    for key, value in data.items():
+        if key == "collisions_json":
+            continue
+        arr = np.asarray(value)
+        if key in TIME_SERIES_KEYS and arr.ndim >= 1 and arr.shape[0] == num_steps:
+            out[key] = arr[:end_step]
+        else:
+            out[key] = value
+    trimmed_collisions = collisions_per_step[:end_step]
+    return out, trimmed_collisions
 
 
 def build_collision_voxel_sequence(
