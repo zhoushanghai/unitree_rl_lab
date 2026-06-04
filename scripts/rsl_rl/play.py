@@ -7,6 +7,11 @@
 
 """Launch Isaac Sim Simulator first."""
 
+import os
+import sys
+# Force using the local rsl_rl directory instead of the prebundled package in Isaac Sim site-packages
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rsl_rl"))
+
 import argparse
 from importlib.metadata import version
 
@@ -141,12 +146,15 @@ def main():
 
     # extract the neural network module
     # we do this in a try-except to maintain backwards compatibility.
-    try:
-        # version 2.3 onwards
-        policy_nn = runner.alg.policy
-    except AttributeError:
-        # version 2.2 and below
-        policy_nn = runner.alg.actor_critic
+    if hasattr(runner.alg, "actor"):
+        policy_nn = runner.alg.actor
+    else:
+        try:
+            # version 2.3 onwards
+            policy_nn = runner.alg.policy
+        except AttributeError:
+            # version 2.2 and below
+            policy_nn = runner.alg.actor_critic
 
     # extract the normalizer
     if hasattr(policy_nn, "actor_obs_normalizer"):
@@ -158,8 +166,32 @@ def main():
 
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
-    export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
+    
+    # If the policy network itself does not have an 'actor' or 'student' attribute,
+    # wrap it to satisfy the exporter's expectations.
+    if not hasattr(policy_nn, "actor") and not hasattr(policy_nn, "student"):
+        class JitPolicyExporterWrapper:
+            def __init__(self, actor):
+                self.actor = actor.as_jit() if hasattr(actor, "as_jit") else actor
+                self.is_recurrent = getattr(actor, "is_recurrent", False)
+                if hasattr(actor, "memory_a"):
+                    self.memory_a = actor.memory_a
+                    
+        class OnnxPolicyExporterWrapper:
+            def __init__(self, actor):
+                self.actor = actor.as_onnx(verbose=False) if hasattr(actor, "as_onnx") else actor
+                self.is_recurrent = getattr(actor, "is_recurrent", False)
+                if hasattr(actor, "memory_a"):
+                    self.memory_a = actor.memory_a
+
+        export_policy_jit = JitPolicyExporterWrapper(policy_nn)
+        export_policy_onnx = OnnxPolicyExporterWrapper(policy_nn)
+    else:
+        export_policy_jit = policy_nn
+        export_policy_onnx = policy_nn
+
+    export_policy_as_jit(export_policy_jit, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
+    export_policy_as_onnx(export_policy_onnx, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
 
     dt = env.unwrapped.step_dt
 

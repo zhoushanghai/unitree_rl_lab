@@ -236,6 +236,15 @@ class _OnnxMLPModel(nn.Module):
             self.deterministic_output = nn.Identity()
         self.input_size = model.obs_dim
 
+    def __getitem__(self, idx):
+        """Mock indexing to support exporters that assume the model is sequential (e.g., self.actor[0].in_features)."""
+        if idx == 0:
+            class DummyLayer:
+                def __init__(self, in_features):
+                    self.in_features = in_features
+            return DummyLayer(self.input_size)
+        raise IndexError("Index out of range for _OnnxMLPModel")
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Run deterministic inference for ONNX export."""
         x = self.obs_normalizer(x)

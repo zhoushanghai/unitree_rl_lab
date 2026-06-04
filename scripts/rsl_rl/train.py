@@ -8,9 +8,13 @@
 """Launch Isaac Sim Simulator first."""
 
 
+import os
+import sys
+# Force using the local rsl_rl directory instead of the prebundled package in Isaac Sim site-packages
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rsl_rl"))
+
 import gymnasium as gym
 import pathlib
-import sys
 
 sys.path.insert(0, f"{pathlib.Path(__file__).parent.parent}")
 from list_envs import import_packages  # noqa: F401

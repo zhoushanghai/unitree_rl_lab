@@ -134,6 +134,12 @@ This repository is built upon the support and contributions of the following ope
 - [robot_lab](https://github.com/fan-ziqi/robot_lab): Referenced for project structure and parts of the implementation.
 - [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.
 
+安装
+```
+./unitree_rl_lab.sh -i
+cd rsl_rl && pip install -e .
+```
+
 ```
 ./unitree_rl_lab.sh -t \
   --task Unitree-G1-29dof-Velocity \
@@ -141,8 +147,17 @@ This repository is built upon the support and contributions of the following ope
   --seed 42 \
   --max_iterations 5000000 \
   --experiment_name basic-controler \
-  --run_name first-test  \
+  --run_name docker  \
   --logger wandb --log_project_name basic \
   --checkpoint logs/model_21600.pt
 ```
 
+play
+```
+./unitree_rl_lab.sh -p \
+  --task Unitree-G1-29dof-Velocity \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity/2026-05-29_11-08-59_first-test/model_52800.pt \
+  --num_envs 32 \
+  --real-time
+
+```

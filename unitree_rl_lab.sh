@@ -10,6 +10,14 @@ if ! [[ -z "${VIRTUAL_ENV}" ]]; then
 # 兼容 Conda 环境（保留原有逻辑，不影响 Conda 用户）
 elif ! [[ -z "${CONDA_PREFIX}" ]]; then
     python_exe=${CONDA_PREFIX}/bin/python
+# 自动检测 Docker 中 Isaac Lab 默认的 venv 路径
+elif [ -f "/workspace/isaaclab/env/bin/python" ]; then
+    python_exe="/workspace/isaaclab/env/bin/python"
+# 如果是在 Docker 容器中且存在系统 python，则作为 fallback
+elif [ -f /.dockerenv ] && command -v python3 &> /dev/null; then
+    python_exe=$(command -v python3)
+elif [ -f /.dockerenv ] && command -v python &> /dev/null; then
+    python_exe=$(command -v python)
 # 都没检测到则报错退出
 else
     echo "[Error] No virtual environment activated (uv/venv/Conda). Please activate first."
