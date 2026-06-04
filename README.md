@@ -12,13 +12,9 @@ This project provides a set of reinforcement learning environments for Unitree r
 Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
 
 
-
-
 | Isaac Lab | Mujoco | Physical |
 | --------- | ------ | -------- |
 |           |        |          |
-
-
 
 
 ## Installation
@@ -36,7 +32,7 @@ Currently supports Unitree **Go2**, **H1** and **G1-29dof** robots.
     # restart your shell to activate the environment changes.
     ```
 - Download unitree robot description files
-  *Method 1: Using USD Files*
+*Method 1: Using USD Files*
   - Download unitree usd files from [unitree_model](https://huggingface.co/datasets/unitreerobotics/unitree_model/tree/main), keeping folder structure
     ```bash
     git clone https://huggingface.co/datasets/unitreerobotics/unitree_model
@@ -135,6 +131,7 @@ This repository is built upon the support and contributions of the following ope
 - [whole_body_tracking](https://github.com/HybridRobotics/whole_body_tracking): Versatile humanoid control framework for motion tracking.
 
 安装
+
 ```
 ./unitree_rl_lab.sh -i
 cd rsl_rl && pip install -e .
@@ -153,6 +150,7 @@ cd rsl_rl && pip install -e .
 ```
 
 play
+
 ```
 ./unitree_rl_lab.sh -p \
   --task Unitree-G1-29dof-Velocity \
@@ -163,6 +161,7 @@ play
 ```
 
 collect data（`dataset/` 已有文件时从最大编号续接；`contact_position` 来自 `contact_pos_w`）
+
 ```
 docker exec -it prop python scripts/rsl_rl/collect_data.py \
   --task Unitree-G1-29dof-Velocity \
@@ -184,9 +183,30 @@ python scripts/rsl_rl/npz_to_json.py --input dataset/episode_00003.npz
 
 ```
 
+process collision voxels（`dataset/` → `dataset_voxel/`，原字段 + `collision_voxel`；见 `docs/collision_voxel_design.md`）
+
+```
+python scripts/rsl_rl/process_collision_voxels.py \
+  --input dataset \
+  --output dataset_voxel \
+  --min-cmd-speed 0.3
+```
+
+replay voxel dataset（Isaac Lab 回放 + 橙色体素占用格，需图形界面）
+
+```
+docker exec -it prop python scripts/rsl_rl/replay_voxel_dataset.py \
+# 可选：同时显示 collisions_json 碰撞红点
+docker exec -it prop python scripts/rsl_rl/replay_voxel_dataset.py \
+  --file dataset_voxel/episode_00009.npz \
+  --real-time --show-contacts
+```
+
 replay dataset（回放录制的关节/根位姿 + 红色碰撞点）
+
 ```
 docker exec -it prop python scripts/rsl_rl/replay_dataset.py \
   --file dataset/episode_00011.npz \
   --real-time
 ```
+

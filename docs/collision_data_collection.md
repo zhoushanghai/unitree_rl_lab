@@ -54,11 +54,24 @@
     "body_name": "left_ankle_roll_link",
     "force_magnitude": 15.42,
     "contact_force_vector": [1.2, -0.5, 15.37],
-    "contact_position": [0.15, -0.08, 0.02]
+    "contact_position": [0.15, -0.08, 0.02],
+    "contact_position_source": "contact_pos_w"
 }
 ```
 
+- `contact_position`：世界系碰撞点，来自 PhysX `contact_pos_w`；无效时为空且 `contact_position_source` 为 `"invalid"`。
+- 障碍接触由每连杆 `obstacle_contact_<link>` 传感器采集（见 `velocity_env_cfg.py`）。
+
+**下游：局部体素数据集**
+
+离线后处理见 [`collision_voxel_design.md`](collision_voxel_design.md)：由 `dataset/` 生成 `dataset_voxel/`（拷贝原字段 + `collision_voxel`）。**`command` 线速度 \(\sqrt{v_x^2+v_y^2} < 0.3\,\text{m/s}\) 的 episode 不写入** `dataset_voxel/`。
+
+```bash
+python scripts/rsl_rl/process_collision_voxels.py --input dataset --output dataset_voxel
+```
+
 ---
+
 
 ## 3. 传感器与位姿调用机制 (Isaac Lab API)
 
