@@ -210,3 +210,7 @@ docker exec -it prop python scripts/rsl_rl/replay_dataset.py \
   --real-time
 ```
 
+---
+```
+docker exec -it flowmatching python /home/hz/project/scripts/flow_matching/train.py
+```

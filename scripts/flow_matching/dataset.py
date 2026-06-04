@@ -24,52 +24,47 @@ class VoxelFlowDataset(Dataset):
         
         # 记录每条有效序列的索引，构建扁平化的全局映射
         self.index_map = []  
-        self.episodes = []
+        # 不再在内存中持有所有数据 (防止超过 10000 个文件撑爆系统 RAM)
+        # self.episodes = [] 
         
-        print(f"Loading {len(self.files)} episodes from {data_dir}...")
+        print(f"Scanning {len(self.files)} episodes from {data_dir} to build index...")
         for file_idx, fpath in enumerate(self.files):
-            data = np.load(fpath)
-            
-            # 提取 93 维纯本体感知特征 (Privileged info like base_lin_vel is excluded)
-            # base_ang_vel (3), projected_gravity (3), joint_pos (29), joint_vel (29), last_action (29)
+            # 仅读取一次以获取长度，随后释放内存
+            with np.load(fpath) as data:
+                voxel = data['collision_voxel'] 
+                T = voxel.shape[0]
+                
+            if T > 1:
+                # 滑动窗口构建索引
+                # 我们需要 V[t] 作为 V_prev，V[t+1] 作为 V_curr
+                # 即便 t < 49 (不够 50 帧历史)，也可以通过向前 Padding 来处理
+                for t in range(0, T - 1):
+                    self.index_map.append((file_idx, t))
+
+    def __len__(self):
+        return len(self.index_map)
+    
+    def __getitem__(self, idx):
+        file_idx, t = self.index_map[idx]
+        fpath = self.files[file_idx]
+        
+        # 懒加载 (Lazy Loading): 用到这帧数据时再去硬盘里读取，防止 OOM
+        with np.load(fpath) as data:
             base_ang_vel = data['base_ang_vel']
             projected_gravity = data['projected_gravity']
             joint_pos = data['joint_pos']
             joint_vel = data['joint_vel']
             last_action = data['last_action']
             
-            # 拼接得到 (T, 93) 的条件向量
             condition = np.concatenate([
                 base_ang_vel, projected_gravity, joint_pos, joint_vel, last_action
-            ], axis=-1)
+            ], axis=-1).astype(np.float32)
             
-            # 提取体素 (T, 20, 20, 15)
-            voxel = data['collision_voxel'] 
-            
-            T = voxel.shape[0]
-            if T > 1:
-                self.episodes.append({
-                    'condition': condition.astype(np.float32),
-                    'voxel': voxel.astype(np.float32)
-                })
-                ep_idx = len(self.episodes) - 1
-                
-                # 滑动窗口构建索引
-                # 我们需要 V[t] 作为 V_prev，V[t+1] 作为 V_curr
-                # 即便 t < 49 (不够 50 帧历史)，也可以通过向前 Padding 来处理
-                for t in range(0, T - 1):
-                    self.index_map.append((ep_idx, t))
-
-    def __len__(self):
-        return len(self.index_map)
-    
-    def __getitem__(self, idx):
-        ep_idx, t = self.index_map[idx]
-        ep_data = self.episodes[ep_idx]
+            voxel = data['collision_voxel'].astype(np.float32)
         
         # 1. 提取条件序列
         start_idx = max(0, t - self.seq_len + 1)
-        c_seq_actual = ep_data['condition'][start_idx : t + 1] # shape (L, 93), L <= 50
+        c_seq_actual = condition[start_idx : t + 1] # shape (L, 93), L <= 50
         
         # 如果长度不足 50 帧 (例如 t=0 时，只有 1 帧)，使用第 0 帧进行向前重复填充 (Replicate Padding)
         actual_len = c_seq_actual.shape[0]
@@ -85,8 +80,8 @@ class VoxelFlowDataset(Dataset):
         c_seq = c_seq.T
         
         # 2. 提取连续两帧体素
-        v_prev = ep_data['voxel'][t]       # (20, 20, 15)
-        v_curr = ep_data['voxel'][t + 1]   # (20, 20, 15)
+        v_prev = voxel[t]       # (20, 20, 15)
+        v_curr = voxel[t + 1]   # (20, 20, 15)
         
         # 增加 Channel 维度 -> (1, 20, 20, 15)
         v_prev = np.expand_dims(v_prev, axis=0)
