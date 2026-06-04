@@ -80,3 +80,5 @@ datasets
 
 # Mimic
 *.npz
+
+dataset/

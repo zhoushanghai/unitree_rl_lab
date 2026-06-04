@@ -86,6 +86,17 @@ class RobotSceneCfg(InteractiveSceneCfg):
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
+    # 障碍专用接触传感器：
+    # - prim_path 覆盖机器人全身所有刚体
+    # - filter_prim_paths_expr 强制只统计与 Obstacle 的接触
+    # - track_contact_points=True 开启后可直接读取 contact_pos_w（真实碰撞点世界坐标）
+    obstacle_contact_forces = ContactSensorCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/.*",
+        filter_prim_paths_expr=["{ENV_REGEX_NS}/Obstacle"],
+        history_length=3,
+        track_air_time=False,
+        track_contact_points=True,
+    )
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -423,6 +434,7 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
+        self.scene.obstacle_contact_forces.update_period = self.sim.dt
         self.scene.height_scanner.update_period = self.decimation * self.sim.dt
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator
