@@ -1,11 +1,14 @@
 """Collect proprioception + obstacle-collision data from a trained G1 policy.
 
 Usage (inside Docker):
-    /home/hz/IsaacLab/_isaac_sim/python.sh scripts/rsl_rl/collect_data.py \\
+    python scripts/rsl_rl/collect_data.py \\
         --task Unitree-G1-29dof-Velocity \\
         --checkpoint logs/rsl_rl/.../model_XXXXX.pt \\
         --num_episodes 100 \\
         --headless
+
+    # 多卡：每张 GPU 起一个独立 Isaac 进程，episode 编号预先划分，避免写盘冲突
+    python scripts/rsl_rl/collect_data.py ... --gpu_ids 0,1 --num_envs 64 --headless
 
 Output:
     dataset/episode_00001.npz, episode_00002.npz, ...
@@ -15,7 +18,9 @@ Output:
 每步记录字段见 collision_data_collection.md。
 """
 
+import argparse
 import os
+import subprocess
 import sys
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,27 +28,158 @@ _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_SCRIPT_DIR)), "rsl_rl"))
 sys.path.insert(0, _SCRIPT_DIR)
 
-import argparse
 
-from isaaclab.app import AppLauncher
+def _existing_episode_count(dataset_dir: str) -> int:
+    """扫描 dataset 目录中 episode_XXXXX.npz，返回已有最大编号（无文件则为 0）。"""
+    if not os.path.isdir(dataset_dir):
+        return 0
+    max_idx = 0
+    for name in os.listdir(dataset_dir):
+        if not (name.startswith("episode_") and name.endswith(".npz")):
+            continue
+        try:
+            max_idx = max(max_idx, int(name[len("episode_") : -len(".npz")]))
+        except ValueError:
+            continue
+    return max_idx
+
+
+def _parse_gpu_ids(gpu_ids: str) -> list[int]:
+    ids = [int(x.strip()) for x in gpu_ids.split(",") if x.strip()]
+    if not ids:
+        raise ValueError("--gpu_ids 不能为空")
+    return ids
+
+
+def _split_episode_quota(total: int, num_workers: int) -> list[int]:
+    """将 total 条 episode 均分到 num_workers（余数给前几个 worker）。"""
+    base, rem = divmod(total, num_workers)
+    return [base + (1 if i < rem else 0) for i in range(num_workers)]
+
+
+def _filter_argv(argv: list[str], remove_flags: set[str]) -> list[str]:
+    """从 argv 中去掉指定 flag 及其参数值。"""
+    out: list[str] = []
+    skip_next = False
+    for i, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in remove_flags:
+            if i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                skip_next = True
+            continue
+        if any(arg.startswith(f"{f}=") for f in remove_flags):
+            continue
+        out.append(arg)
+    return out
+
+
+def _launch_multi_gpu_workers(args_cli) -> None:
+    """父进程：按 GPU 划 episode 区间，子进程各绑一张卡（CUDA_VISIBLE_DEVICES）。"""
+    gpu_ids = _parse_gpu_ids(args_cli.gpu_ids)
+    quotas = _split_episode_quota(args_cli.num_episodes, len(gpu_ids))
+    dataset_dir = "dataset"
+    ep_base = _existing_episode_count(dataset_dir)
+
+    # 去掉 --gpu_ids，子进程以单卡 worker 方式启动
+    worker_argv = _filter_argv(sys.argv[1:], {"--gpu_ids"})
+    script = os.path.abspath(sys.argv[0])
+    procs: list[subprocess.Popen] = []
+    next_ep = ep_base
+
+    print(
+        f"[INFO] Multi-GPU collect: gpus={gpu_ids}, total_new_episodes={args_cli.num_episodes}, "
+        f"quotas={quotas}, resume_after=episode_{ep_base:05d}"
+    )
+
+    for worker_i, (gpu_id, quota) in enumerate(zip(gpu_ids, quotas)):
+        if quota <= 0:
+            continue
+        episode_start = next_ep + 1
+        cmd = [
+            sys.executable,
+            script,
+            *worker_argv,
+            "--episode_start",
+            str(episode_start),
+            "--num_episodes",
+            str(quota),
+            "--_worker_gpu",
+            str(worker_i),
+            "--device",
+            "cuda:0",
+        ]
+        env = os.environ.copy()
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+        print(
+            f"[INFO] Spawn worker {worker_i}: physical_gpu={gpu_id}, "
+            f"episodes {episode_start:05d}..{episode_start + quota - 1:05d}, "
+            f"num_envs={args_cli.num_envs}"
+        )
+        procs.append(subprocess.Popen(cmd, env=env))
+        next_ep += quota
+
+    failed = 0
+    for worker_i, proc in enumerate(procs):
+        rc = proc.wait()
+        if rc != 0:
+            print(f"[ERROR] Worker {worker_i} exited with code {rc}")
+            failed += 1
+    if failed:
+        raise SystemExit(1)
+    print(f"[INFO] All {len(procs)} GPU workers finished.")
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Collect collision data with a trained G1 policy.")
+    parser.add_argument("--task", type=str, default="Unitree-G1-29dof-Velocity", help="Isaac Lab task name.")
+    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt).")
+    parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to collect.")
+    parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments to run.")
+    parser.add_argument("--force_threshold", type=float, default=1.0, help="Minimum contact force (N) to record.")
+    parser.add_argument(
+        "--gpu_ids",
+        type=str,
+        default=None,
+        help="逗号分隔物理 GPU 编号，如 0,1。将启动多进程，每卡一个 Isaac 实例；"
+        "episode 编号在启动时划分，避免写盘冲突。",
+    )
+    parser.add_argument(
+        "--episode_start",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--_worker_gpu",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
+    )
+    return parser
+
 
 # ---------------------------------------------------------------------------
-# Argument parsing — 独立定义，不调用 cli_args.add_rsl_rl_args()
-# 原因：cli_args.py 中已注册 --checkpoint，重复注册会触发 ArgumentError。
+# Argument parsing — 须在 AppLauncher 之前；多卡时父进程直接 spawn 后退出
 # ---------------------------------------------------------------------------
-parser = argparse.ArgumentParser(description="Collect collision data with a trained G1 policy.")
-parser.add_argument("--task", type=str, default="Unitree-G1-29dof-Velocity", help="Isaac Lab task name.")
-parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint (.pt).")
-parser.add_argument("--num_episodes", type=int, default=100, help="Number of episodes to collect.")
-parser.add_argument("--num_envs", type=int, default=16, help="Number of parallel environments to run.")
-parser.add_argument("--force_threshold", type=float, default=1.0, help="Minimum contact force (N) to record.")
-parser.add_argument(
-    "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
-)
+parser = _build_arg_parser()
+from isaaclab.app import AppLauncher  # noqa: E402
 
-# AppLauncher 追加 --headless 等参数
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+if args_cli.gpu_ids and args_cli._worker_gpu is None:
+    _gpu_list = _parse_gpu_ids(args_cli.gpu_ids)
+    if len(_gpu_list) == 1:
+        # 单卡：只绑定可见 GPU，不额外 spawn 子进程
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(_gpu_list[0])
+    else:
+        _launch_multi_gpu_workers(args_cli)
+        raise SystemExit(0)
 
 # Launch Isaac Sim FIRST，之后才能 import torch/gym 等
 app_launcher = AppLauncher(args_cli)
@@ -85,21 +221,6 @@ obstacle_contact_sensor_name = _obstacle_sensors_mod.obstacle_contact_sensor_nam
 # ---------------------------------------------------------------------------
 # 辅助工具
 # ---------------------------------------------------------------------------
-
-def _existing_episode_count(dataset_dir: str) -> int:
-    """扫描 dataset 目录中 episode_XXXXX.npz，返回已有最大编号（无文件则为 0）。"""
-    if not os.path.isdir(dataset_dir):
-        return 0
-    max_idx = 0
-    for name in os.listdir(dataset_dir):
-        if not (name.startswith("episode_") and name.endswith(".npz")):
-            continue
-        try:
-            max_idx = max(max_idx, int(name[len("episode_") : -len(".npz")]))
-        except ValueError:
-            continue
-    return max_idx
-
 
 def _to_list(tensor) -> list:
     """把任意形状的 tensor/ndarray 转成 Python list（JSON 可序列化）。"""
@@ -252,9 +373,21 @@ def main():
     os.makedirs(dataset_dir, exist_ok=True)
     force_threshold = args_cli.force_threshold
 
-    # 续接已有数据：从最大 episode 编号往后写，不覆盖旧文件
-    existing_count = _existing_episode_count(dataset_dir)
-    target_count = existing_count + args_cli.num_episodes
+    # episode 编号：多卡 worker 用父进程划好的区间；单卡则扫描 dataset 续接
+    if args_cli.episode_start is not None:
+        existing_count = args_cli.episode_start - 1
+        target_count = existing_count + args_cli.num_episodes
+        worker_tag = (
+            f"worker={args_cli._worker_gpu} cuda={args_cli.device} "
+            f"(CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'all')})"
+        )
+        print(
+            f"[INFO] GPU worker [{worker_tag}]: episodes "
+            f"{args_cli.episode_start:05d}..{target_count:05d} ({args_cli.num_episodes} new)"
+        )
+    else:
+        existing_count = _existing_episode_count(dataset_dir)
+        target_count = existing_count + args_cli.num_episodes
 
     # 用来存储每个环境正在采集的当前 episode 数据
     active_episodes = [[] for _ in range(num_envs)]
@@ -269,16 +402,17 @@ def main():
 
     obs = _get_obs()
 
-    if existing_count > 0:
-        print(
-            f"[INFO] Found {existing_count} episodes in {dataset_dir}/, "
-            f"appending {args_cli.num_episodes} more → episode_{existing_count + 1:05d}.npz ..."
-        )
-    else:
-        print(
-            f"[INFO] Collecting {args_cli.num_episodes} episodes using {num_envs} environments "
-            f"(force threshold: {force_threshold} N) ..."
-        )
+    if args_cli.episode_start is None:
+        if existing_count > 0:
+            print(
+                f"[INFO] Found {existing_count} episodes in {dataset_dir}/, "
+                f"appending {args_cli.num_episodes} more → episode_{existing_count + 1:05d}.npz ..."
+            )
+        else:
+            print(
+                f"[INFO] Collecting {args_cli.num_episodes} episodes using {num_envs} environments "
+                f"(force threshold: {force_threshold} N) ..."
+            )
 
     # 每步决策步数 = decimation；物理 dt = sim.dt；step_dt = decimation * sim.dt
     step_dt = raw_env.step_dt

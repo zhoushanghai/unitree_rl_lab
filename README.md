@@ -171,6 +171,15 @@ docker exec -it prop python scripts/rsl_rl/collect_data.py \
   --num_episodes 10000 \
   --headless
 
+# 多卡（每卡一个进程，自动划分 episode 编号；显存/内存约为单卡的 N 倍）
+docker exec -it prop python scripts/rsl_rl/collect_data.py \
+  --task Unitree-G1-29dof-Velocity \
+  --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity/2026-05-29_11-08-59_first-test/model_53200.pt \
+  --gpu_ids 0,1 \
+  --num_envs 64 \
+  --num_episodes 10000 \
+  --headless
+
 python scripts/rsl_rl/npz_to_json.py --input dataset/episode_00003.npz
 
 ```
