@@ -162,15 +162,22 @@ play
 
 ```
 
-collect data
+collect data（`dataset/` 已有文件时从最大编号续接；`contact_position` 来自 `contact_pos_w`）
 ```
 docker exec -it prop python scripts/rsl_rl/collect_data.py \
   --task Unitree-G1-29dof-Velocity \
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity/2026-05-29_11-08-59_first-test/model_53200.pt \
-  --num_envs 32 \
+  --num_envs 128 \
   --num_episodes 10000 \
   --headless
 
-python scripts/rsl_rl/npz_to_json.py --input dataset/episode_00001.npz
+python scripts/rsl_rl/npz_to_json.py --input dataset/episode_00003.npz
 
+```
+
+replay dataset（回放录制的关节/根位姿 + 红色碰撞点）
+```
+docker exec -it prop python scripts/rsl_rl/replay_dataset.py \
+  --file dataset/episode_00011.npz \
+  --real-time
 ```

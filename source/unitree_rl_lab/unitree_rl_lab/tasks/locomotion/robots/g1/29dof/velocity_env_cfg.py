@@ -20,6 +20,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 from unitree_rl_lab.assets.robots.unitree import UNITREE_G1_29DOF_CFG as ROBOT_CFG
 from unitree_rl_lab.tasks.locomotion import mdp
+from .obstacle_contact_sensors import iter_obstacle_contact_sensors
 
 COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
     size=(8.0, 8.0),
@@ -37,9 +38,8 @@ COBBLESTONE_ROAD_CFG = terrain_gen.TerrainGeneratorCfg(
 )
 
 
-@configclass
-class RobotSceneCfg(InteractiveSceneCfg):
-    """Configuration for the terrain scene with a legged robot."""
+class _RobotSceneCfgBase(InteractiveSceneCfg):
+    """G1 场景基类；各连杆 obstacle 接触传感器在类定义后注入。"""
 
     # ground terrain
     terrain = TerrainImporterCfg(
@@ -86,17 +86,6 @@ class RobotSceneCfg(InteractiveSceneCfg):
         mesh_prim_paths=["/World/ground"],
     )
     contact_forces = ContactSensorCfg(prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True)
-    # 障碍专用接触传感器：
-    # - prim_path 覆盖机器人全身所有刚体
-    # - filter_prim_paths_expr 强制只统计与 Obstacle 的接触
-    # - track_contact_points=True 开启后可直接读取 contact_pos_w（真实碰撞点世界坐标）
-    obstacle_contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*",
-        filter_prim_paths_expr=["{ENV_REGEX_NS}/Obstacle"],
-        history_length=3,
-        track_air_time=False,
-        track_contact_points=True,
-    )
     # lights
     sky_light = AssetBaseCfg(
         prim_path="/World/skyLight",
@@ -105,6 +94,13 @@ class RobotSceneCfg(InteractiveSceneCfg):
             texture_file=f"{ISAAC_NUCLEUS_DIR}/Materials/Textures/Skies/PolyHaven/kloofendal_43d_clear_puresky_4k.hdr",
         ),
     )
+
+
+# 全身各连杆独立 obstacle 接触传感器（filter=Obstacle 单列，contact_pos_w[..., 0, ...]）
+for _sensor_key, _link_name, _sensor_cfg in iter_obstacle_contact_sensors():
+    setattr(_RobotSceneCfgBase, _sensor_key, _sensor_cfg)
+
+RobotSceneCfg = configclass(_RobotSceneCfgBase)
 
 
 @configclass
@@ -434,7 +430,8 @@ class RobotEnvCfg(ManagerBasedRLEnvCfg):
         # update sensor update periods
         # we tick all the sensors based on the smallest update period (physics update period)
         self.scene.contact_forces.update_period = self.sim.dt
-        self.scene.obstacle_contact_forces.update_period = self.sim.dt
+        for _sensor_key, _, _ in iter_obstacle_contact_sensors():
+            getattr(self.scene, _sensor_key).update_period = self.sim.dt
         self.scene.height_scanner.update_period = self.decimation * self.sim.dt
 
         # check if terrain levels curriculum is enabled - if so, enable curriculum for terrain generator

@@ -9,6 +9,7 @@ Usage (inside Docker):
 
 Output:
     dataset/episode_00001.npz, episode_00002.npz, ...
+    若 dataset/ 已有文件，从最大编号续接；每次运行再写入 --num_episodes 条新数据。
 
 每个 NPZ 文件保存为一个压缩的字典，其中数值类型保存为 float32 数组，碰撞列表序列化为 JSON 字符串保存。
 每步记录字段见 collision_data_collection.md。
@@ -17,11 +18,10 @@ Output:
 import os
 import sys
 
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Force using the local rsl_rl directory instead of the prebundled package
-sys.path.insert(
-    0,
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "rsl_rl"),
-)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_SCRIPT_DIR)), "rsl_rl"))
+sys.path.insert(0, _SCRIPT_DIR)
 
 import argparse
 
@@ -71,10 +71,35 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 import unitree_rl_lab.tasks  # noqa: F401
 from unitree_rl_lab.utils.parser_cfg import parse_env_cfg
 
+import importlib
+
+from collision_contact_utils import resolve_contact_position_from_contact_pos_w
+
+_obstacle_sensors_mod = importlib.import_module(
+    "unitree_rl_lab.tasks.locomotion.robots.g1.29dof.obstacle_contact_sensors"
+)
+G1_OBSTACLE_CONTACT_BODY_NAMES = _obstacle_sensors_mod.G1_OBSTACLE_CONTACT_BODY_NAMES
+obstacle_contact_sensor_name = _obstacle_sensors_mod.obstacle_contact_sensor_name
+
 
 # ---------------------------------------------------------------------------
 # 辅助工具
 # ---------------------------------------------------------------------------
+
+def _existing_episode_count(dataset_dir: str) -> int:
+    """扫描 dataset 目录中 episode_XXXXX.npz，返回已有最大编号（无文件则为 0）。"""
+    if not os.path.isdir(dataset_dir):
+        return 0
+    max_idx = 0
+    for name in os.listdir(dataset_dir):
+        if not (name.startswith("episode_") and name.endswith(".npz")):
+            continue
+        try:
+            max_idx = max(max_idx, int(name[len("episode_") : -len(".npz")]))
+        except ValueError:
+            continue
+    return max_idx
+
 
 def _to_list(tensor) -> list:
     """把任意形状的 tensor/ndarray 转成 Python list（JSON 可序列化）。"""
@@ -86,66 +111,42 @@ def _to_list(tensor) -> list:
 
 
 def collect_step_collisions(
-    contact_sensor,
+    obstacle_sensors: dict,
+    robot,
     env_idx: int,
     force_threshold: float,
+    body_name_to_idx: dict[str, int],
 ) -> list:
-    """从 obstacle_contact_forces 传感器提取当前步的碰撞信息列表。
-
-    关键：使用 force_matrix_w（而非 net_forces_w）。
-    - net_forces_w 是该 body 所有接触的合力，会包含地面接触，忽略 filter_prim_paths_expr。
-    - force_matrix_w 形状 (num_envs, num_bodies, num_filtered_bodies, 3)，
-      只包含与 filter_prim_paths_expr 中的物体（Obstacle）的接触力，过滤语义正确。
-
-    Args:
-        contact_sensor: obstacle_contact_forces 传感器实例。
-        env_idx:        当前环境索引（单环境时为 0）。
-        force_threshold: 碰撞力阈值（N），低于此值不记录。
-
-    Returns:
-        碰撞信息列表，每项 dict 包含：
-            body_name, force_magnitude, contact_force_vector, contact_position
-    """
+    """遍历各连杆独立 obstacle 传感器，汇总当前步碰撞（filter 维恒为 0）。"""
     collisions = []
+    body_pos_w = robot.data.body_pos_w[env_idx]
+    filter_idx = 0  # 每传感器仅 filter=["{ENV_REGEX_NS}/Obstacle"]
 
-    # force_matrix_w: (num_envs, num_bodies, num_filtered_bodies, 3)
-    # 只包含与 filter_prim_paths_expr（即 Obstacle）的接触力，不含地面等
-    force_matrix_w = contact_sensor.data.force_matrix_w
-    # contact_pos_w: (num_envs, num_bodies, M, 3)
-    contact_pos_w = contact_sensor.data.contact_pos_w
+    for link_name, sensor in obstacle_sensors.items():
+        force_matrix_w = sensor.data.force_matrix_w
+        if force_matrix_w is None:
+            continue
 
-    if force_matrix_w is None:
-        return collisions
+        force_vec = force_matrix_w[env_idx, 0, filter_idx]
+        mag = float(torch.linalg.norm(force_vec).item())
+        if mag < force_threshold:
+            continue
 
-    # 对 filtered bodies 维度求和，得到该 robot body 与所有 filtered bodies 的合力
-    # force_matrix_w[env, body, :, :] -> sum over filtered dim -> (num_bodies, 3)
-    forces_this_env = force_matrix_w[env_idx].sum(dim=1)   # (num_bodies, 3)
-    force_mags = torch.linalg.norm(forces_this_env, dim=-1)  # (num_bodies,)
-
-    # 找出超过阈值的 body 索引
-    hit_body_ids = (force_mags >= force_threshold).nonzero(as_tuple=True)[0]
-    if hit_body_ids.numel() == 0:
-        return collisions
-
-    body_names = contact_sensor.body_names  # list[str], 长度 = num_bodies
-
-    for b_idx in hit_body_ids:
-        b_idx = int(b_idx.item())
-        force_vec = forces_this_env[b_idx]  # (3,)
-        mag = float(force_mags[b_idx].item())
-
-        # 碰撞点坐标：取第一个接触点（索引 0）
-        contact_pos = None
+        contact_pos: list = []
+        pos_source = "invalid"
+        contact_pos_w = sensor.data.contact_pos_w
         if contact_pos_w is not None:
-            pos_candidate = contact_pos_w[env_idx, b_idx, 0]  # (3,)
-            if torch.isfinite(pos_candidate).all():
-                contact_pos = _to_list(pos_candidate)
+            b_idx = body_name_to_idx[link_name]
+            contact_pos, pos_source = resolve_contact_position_from_contact_pos_w(
+                body_pos_w[b_idx], contact_pos_w[env_idx, 0, filter_idx]
+            )
 
         collisions.append({
-            "body_name": body_names[b_idx],
+            "body_name": link_name,
             "force_magnitude": round(mag, 4),
             "contact_force_vector": _to_list(force_vec),
-            "contact_position": contact_pos if contact_pos is not None else [],
+            "contact_position": contact_pos,
+            "contact_position_source": pos_source,
         })
 
     return collisions
@@ -182,16 +183,6 @@ def main():
     env_cfg.events.spawn_obstacle_forward_once.params["delay_range_s"] = (2.0, 4.0)
     env_cfg.events.spawn_obstacle_forward_once.params["lateral_offset_range_m"] = (-0.2, 0.2)
 
-    # 解决 omni.physx 在多环境下对 filter_prim_paths_expr 的广播/维度匹配问题：
-    # PhysX 要求过滤路径的匹配项总数要么为 1 (广播到全部)，要么与 (num_envs * num_bodies) 完全一致（进行 1对1 配对）。
-    # 当 num_envs > 1 时，`{ENV_REGEX_NS}/Obstacle` 会被解析为 num_envs 个匹配项（例如4个），与 128 个 body 既不为 1 也不相等，会导致报错。
-    # 我们根据环境数量，动态为每个环境下的每一个 tracked body (G1 共有 32 个 body) 独立生成对应的障碍物过滤路径。
-    num_bodies = 32
-    filter_exprs = []
-    for env_idx in range(args_cli.num_envs):
-        filter_exprs.extend([f"/World/envs/env_{env_idx}/Obstacle"] * num_bodies)
-    env_cfg.scene.obstacle_contact_forces.filter_prim_paths_expr = filter_exprs
-
     # ------------------------------------------------------------------
     # 2. 加载 agent 配置（只需要能构造 runner，不依赖 cli_args）
     # ------------------------------------------------------------------
@@ -226,24 +217,48 @@ def main():
     raw_env = env.unwrapped
     robot = raw_env.scene["robot"]
 
-    # obstacle_contact_forces：只统计与 Obstacle 的接触，track_contact_points=True
-    if "obstacle_contact_forces" not in raw_env.scene.sensors:
-        raise RuntimeError(
-            "Sensor 'obstacle_contact_forces' not found in scene. "
-            "Please add it to RobotSceneCfg in velocity_env_cfg.py."
-        )
-    contact_sensor = raw_env.scene.sensors["obstacle_contact_forces"]
+    # 各连杆独立 obstacle 传感器（obstacle_contact_<link>）
+    obstacle_sensors = {}
+    for link_name in G1_OBSTACLE_CONTACT_BODY_NAMES:
+        key = obstacle_contact_sensor_name(link_name)
+        if key not in raw_env.scene.sensors:
+            raise RuntimeError(
+                f"Sensor '{key}' not found. "
+                "请在 velocity_env_cfg.RobotSceneCfg 中注册 per-link obstacle 接触传感器。"
+            )
+        obstacle_sensors[link_name] = raw_env.scene.sensors[key]
+
+    num_envs = args_cli.num_envs
+    body_name_to_idx = {name: i for i, name in enumerate(robot.body_names)}
+    missing = [ln for ln in G1_OBSTACLE_CONTACT_BODY_NAMES if ln not in body_name_to_idx]
+    if missing:
+        raise RuntimeError(f"Robot 缺少连杆名（与传感器配置不一致）: {missing[:5]}...")
+
+    n_sensors = len(obstacle_sensors)
+    sample = next(iter(obstacle_sensors.values()))
+    filter_count = sample.data.force_matrix_w.shape[2] if sample.data.force_matrix_w is not None else 0
+    print(
+        f"[INFO] Per-link obstacle sensors: {n_sensors}, num_envs={num_envs}, "
+        f"filter_count={filter_count} (期望 1，即仅 Obstacle)"
+    )
+    if sample.data.contact_pos_w is None:
+        print("[WARN] contact_pos_w is None; 将无法写入真实接触点坐标。")
+    print("[INFO] contact_position 仅来自 contact_pos_w（连杆-障碍物接触点平均），无效时留空。")
 
     # ------------------------------------------------------------------
     # 6. 数据采集循环
     # ------------------------------------------------------------------
-    os.makedirs("dataset", exist_ok=True)
+    dataset_dir = "dataset"
+    os.makedirs(dataset_dir, exist_ok=True)
     force_threshold = args_cli.force_threshold
-    num_envs = args_cli.num_envs
+
+    # 续接已有数据：从最大 episode 编号往后写，不覆盖旧文件
+    existing_count = _existing_episode_count(dataset_dir)
+    target_count = existing_count + args_cli.num_episodes
 
     # 用来存储每个环境正在采集的当前 episode 数据
     active_episodes = [[] for _ in range(num_envs)]
-    saved_episodes_count = 0
+    saved_episodes_count = existing_count
 
     def _get_obs():
         """兼容 rsl-rl 各版本：get_observations() 可能返回 obs 或 (obs, extras)。"""
@@ -254,13 +269,22 @@ def main():
 
     obs = _get_obs()
 
-    print(f"[INFO] Collecting {args_cli.num_episodes} episodes using {num_envs} environments (force threshold: {force_threshold} N) ...")
+    if existing_count > 0:
+        print(
+            f"[INFO] Found {existing_count} episodes in {dataset_dir}/, "
+            f"appending {args_cli.num_episodes} more → episode_{existing_count + 1:05d}.npz ..."
+        )
+    else:
+        print(
+            f"[INFO] Collecting {args_cli.num_episodes} episodes using {num_envs} environments "
+            f"(force threshold: {force_threshold} N) ..."
+        )
 
     # 每步决策步数 = decimation；物理 dt = sim.dt；step_dt = decimation * sim.dt
     step_dt = raw_env.step_dt
     cmd_term = raw_env.command_manager.get_term("base_velocity")
 
-    while saved_episodes_count < args_cli.num_episodes:
+    while saved_episodes_count < target_count:
         # --- 推理 ---
         with torch.inference_mode():
             actions = policy(obs)
@@ -287,7 +311,13 @@ def main():
             joint_torques = _to_list(robot.data.applied_torque[env_idx])
 
             # 碰撞信息
-            collisions = collect_step_collisions(contact_sensor, env_idx, force_threshold)
+            collisions = collect_step_collisions(
+                obstacle_sensors,
+                robot,
+                env_idx,
+                force_threshold,
+                body_name_to_idx,
+            )
 
             step_data = {
                 "time":              round(sim_time, 4),
@@ -309,8 +339,8 @@ def main():
                 # 如果这个环境之前有数据，说明它刚刚完成了一个 episode，保存它！
                 if len(active_episodes[env_idx]) > 0:
                     saved_episodes_count += 1
-                    if saved_episodes_count <= args_cli.num_episodes:
-                        filename = f"dataset/episode_{saved_episodes_count:05d}.npz"
+                    if saved_episodes_count <= target_count:
+                        filename = f"{dataset_dir}/episode_{saved_episodes_count:05d}.npz"
                         
                         episode_data = active_episodes[env_idx]
                         npz_data = {}
@@ -331,8 +361,10 @@ def main():
                         np.savez_compressed(filename, **npz_data)
 
                         n_collision_steps = sum(1 for s in episode_data if s["collisions"])
+                        run_idx = saved_episodes_count - existing_count
                         print(
-                            f"[INFO] Episode {saved_episodes_count:4d}/{args_cli.num_episodes} | "
+                            f"[INFO] Episode {saved_episodes_count:5d} "
+                            f"(run {run_idx}/{args_cli.num_episodes}) | "
                             f"env={env_idx:2d} | steps={len(episode_data)} | "
                             f"collision_steps={n_collision_steps} | saved → {filename}"
                         )
@@ -343,10 +375,11 @@ def main():
                 active_episodes[env_idx].append(step_data)
 
         # 再次检查是否完成了所有的采集任务（防止在多环境同时 done 时溢出）
-        if saved_episodes_count >= args_cli.num_episodes:
+        if saved_episodes_count >= target_count:
             break
 
-    print(f"[INFO] Done. {saved_episodes_count} episodes saved to dataset/")
+    new_saved = saved_episodes_count - existing_count
+    print(f"[INFO] Done. {new_saved} new episodes saved to {dataset_dir}/ (total: {saved_episodes_count})")
     env.close()
 
 
