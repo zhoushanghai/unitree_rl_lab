@@ -164,11 +164,12 @@ play
 
 collect data
 ```
-docker exec prop python scripts/rsl_rl/collect_data.py \
+docker exec -it prop python scripts/rsl_rl/collect_data.py \
   --task Unitree-G1-29dof-Velocity \
   --checkpoint logs/rsl_rl/unitree_g1_29dof_velocity/2026-05-29_11-08-59_first-test/model_53200.pt \
   --num_envs 32 \
   --num_episodes 10000 \
   --headless
+
 
 ```
