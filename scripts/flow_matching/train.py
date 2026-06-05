@@ -70,12 +70,12 @@ def train():
     # 初始化 wandb
     wandb.init(
         project="unitree-g1-voxel-flow",
-        name="100M_Flow_Matching",
+        name="11M_Flow_Matching",
         config={
-            "batch_size": 128,
+            "batch_size": 512,
             "learning_rate": 1e-4,
             "epochs": 50,
-            "model_size": "100M",
+            "model_size": "11M",
             "optimizer": "AdamW",
             "scheduler": "ReduceLROnPlateau"
         }
@@ -87,10 +87,10 @@ def train():
         # Fallback 到宿主机路径
         data_dir = "/home/hz/proprioception/unitree_rl_lab/dataset_voxel"
         
-    # 针对 100M 大模型调整超参数：
-    # 1. 显卡为 A6000 48GB，具有顶级的显存容量，当前 64 的 batch 只占了 19G。我们直接翻倍拉满到 batch_size=128！
-    # 2. 模型容量变大后，学习率稍微调低一点以保证平稳收敛 (从 3e-4 降到 1e-4)
-    batch_size = 128
+    # 超参数配置：
+    # 1. 显卡为 A6000 48GB，具有顶级的显存容量，当前 128 的 batch 只占了 8.5G。我们调大到 batch_size=512！
+    # 2. 学习率采用较安全的 1e-4
+    batch_size = 512
     num_epochs = 50
     lr = 1e-4
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -105,13 +105,11 @@ def train():
     model = VoxelFlowNet().to(device)
     
     # 让 wandb 深度监听模型！
-    # 这会自动记录每一层神经网络权重的直方图 (Histograms) 和反向传播的梯度 (Gradients)
     wandb.watch(model, log="all", log_freq=100)
     
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     
     # 自适应学习率调度器：基于 Loss 监控的自动降衰 (ReduceLROnPlateau)
-    # 当训练效果 (Loss) 停滞不前时，自动将学习率降低一半 (factor=0.5)，帮助模型跳出局部最优
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2, min_lr=1e-6)
     
     # 创建保存目录
@@ -119,12 +117,15 @@ def train():
     
     # 训练循环
     model.train()
+    global_step = 0
     for epoch in range(num_epochs):
         epoch_loss = 0.0
         current_lr = optimizer.param_groups[0]['lr']
         pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs} [lr:{current_lr:.1e}]")
         
         for batch in pbar:
+            global_step += 1
+            
             c_seq = batch['c_seq'].to(device)
             v_prev = batch['v_prev'].to(device)
             v_curr = batch['v_curr'].to(device)
@@ -150,13 +151,20 @@ def train():
                 "train/loss_obs_raw": loss_obs.item(),
                 "train/loss_air_raw": loss_air.item(),
                 "train/loss_dynamic_raw": loss_dynamic.item(),
-                "train/learning_rate": optimizer.param_groups[0]['lr']
+                "train/learning_rate": optimizer.param_groups[0]['lr'],
+                "global_step": global_step
             })
+            
+            # 每 300 次迭代保存一次权重
+            if global_step % 300 == 0:
+                ckpt_path = f"checkpoints/flow_model_step{global_step}.pth"
+                torch.save(model.state_dict(), ckpt_path)
+                print(f"\n[Step {global_step}] Saved checkpoint to {ckpt_path}")
             
         avg_loss = epoch_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{num_epochs}] Average Loss: {avg_loss:.4f}")
         
-        # 步进自适应学习率 (根据实际跑出来的 Loss 来决定要不要降学习率)
+        # 步进自适应学习率
         scheduler.step(avg_loss)
         
         # 将 Epoch 的汇总数据记录到 wandb
@@ -165,11 +173,10 @@ def train():
             "epoch": epoch + 1
         })
         
-        # 每 5 个 epoch 保存一次权重
-        if (epoch + 1) % 5 == 0:
-            ckpt_path = f"checkpoints/flow_model_ep{epoch+1}.pth"
-            torch.save(model.state_dict(), ckpt_path)
-            print(f"Saved checkpoint to {ckpt_path}")
+        # 每个 epoch 结束保存一次权重（覆盖或追加）
+        ckpt_path = f"checkpoints/flow_model_ep{epoch+1}.pth"
+        torch.save(model.state_dict(), ckpt_path)
+        print(f"Saved epoch checkpoint to {ckpt_path}")
             
     # 结束 wandb 监控
     wandb.finish()

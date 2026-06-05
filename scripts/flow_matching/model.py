@@ -23,7 +23,7 @@ class ConditionEncoder(nn.Module):
     """
     def __init__(self, in_channels=122, out_dim=512):
         super().__init__()
-        # 时序降采样：50 -> 25 -> 13 -> 7
+        # 时序降采样：50 -> 25 -> 13 -> 7 -> 4
         self.conv_net = nn.Sequential(
             nn.Conv1d(in_channels, 128, kernel_size=5, stride=2, padding=2),
             nn.GroupNorm(8, 128),
@@ -36,11 +36,15 @@ class ConditionEncoder(nn.Module):
             nn.Conv1d(256, 256, kernel_size=5, stride=2, padding=2),
             nn.GroupNorm(16, 256),
             nn.SiLU(),
+
+            nn.Conv1d(256, 256, kernel_size=5, stride=2, padding=2),
+            nn.GroupNorm(16, 256),
+            nn.SiLU(),
         )
-        # 经过 3 层 stride=2，长度从 50 -> 7
+        # 经过 4 层 stride=2，长度从 50 -> 4
         self.fc = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(256 * 7, out_dim),
+            nn.Linear(256 * 4, out_dim),
             nn.SiLU(),
             nn.Linear(out_dim, out_dim)
         )
@@ -113,25 +117,25 @@ class VoxelFlowNet(nn.Module):
         
         # Encoder (Downsampling)
         # Input: 20x20x15
-        self.enc1 = ResnetBlock3D(in_channels, 256, total_cond_dim)
-        self.down1 = nn.Conv3d(256, 512, kernel_size=3, stride=2, padding=1) 
+        self.enc1 = ResnetBlock3D(in_channels, 64, total_cond_dim)
+        self.down1 = nn.Conv3d(64, 128, kernel_size=3, stride=2, padding=1) 
         # -> 10x10x8
         
-        self.enc2 = ResnetBlock3D(512, 512, total_cond_dim)
-        self.down2 = nn.Conv3d(512, 1024, kernel_size=3, stride=2, padding=1)
+        self.enc2 = ResnetBlock3D(128, 128, total_cond_dim)
+        self.down2 = nn.Conv3d(128, 256, kernel_size=3, stride=2, padding=1)
         # -> 5x5x4
         
         # Bottleneck
-        self.mid = ResnetBlock3D(1024, 1024, total_cond_dim)
+        self.mid = ResnetBlock3D(256, 256, total_cond_dim)
         
         # Decoder (Upsampling)
         self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
-        self.dec1 = ResnetBlock3D(1024 + 512, 512, total_cond_dim)
+        self.dec1 = ResnetBlock3D(256 + 128, 128, total_cond_dim)
         
         self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
-        self.dec2 = ResnetBlock3D(512 + 256, 256, total_cond_dim)
+        self.dec2 = ResnetBlock3D(128 + 64, 64, total_cond_dim)
         
-        self.final_conv = nn.Conv3d(256, in_channels, kernel_size=3, padding=1)
+        self.final_conv = nn.Conv3d(64, in_channels, kernel_size=3, padding=1)
 
     def forward(self, x_s, s, c_seq):
         """
@@ -149,23 +153,23 @@ class VoxelFlowNet(nn.Module):
         x_pad = F.pad(x_s, (0, 1, 0, 0, 0, 0)) # 变为 (20, 20, 16)
         
         # Encoder
-        e1 = self.enc1(x_pad, cond) # (32, 20, 20, 16)
-        h = self.down1(e1)          # (64, 10, 10, 8)
+        e1 = self.enc1(x_pad, cond) # (64, 20, 20, 16)
+        h = self.down1(e1)          # (128, 10, 10, 8)
         
-        e2 = self.enc2(h, cond)     # (64, 10, 10, 8)
-        h = self.down2(e2)          # (128, 5, 5, 4)
+        e2 = self.enc2(h, cond)     # (128, 10, 10, 8)
+        h = self.down2(e2)          # (256, 5, 5, 4)
         
         # Bottleneck
-        h = self.mid(h, cond)       # (128, 5, 5, 4)
+        h = self.mid(h, cond)       # (256, 5, 5, 4)
         
         # Decoder
-        h = self.up1(h)             # (128, 10, 10, 8)
+        h = self.up1(h)             # (256, 10, 10, 8)
         h = torch.cat([h, e2], dim=1)
-        h = self.dec1(h, cond)      # (64, 10, 10, 8)
+        h = self.dec1(h, cond)      # (128, 10, 10, 8)
         
-        h = self.up2(h)             # (64, 20, 20, 16)
+        h = self.up2(h)             # (128, 20, 20, 16)
         h = torch.cat([h, e1], dim=1)
-        h = self.dec2(h, cond)      # (32, 20, 20, 16)
+        h = self.dec2(h, cond)      # (64, 20, 20, 16)
         
         out = self.final_conv(h)    # (1, 20, 20, 16)
         
