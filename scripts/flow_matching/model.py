@@ -19,9 +19,9 @@ class SinusoidalPosEmb(nn.Module):
 
 class ConditionEncoder(nn.Module):
     """
-    编码过去 50 帧的本体感知信息 (Batch, 93, 50)
+    编码过去 50 帧的本体感知信息 (Batch, 122, 50)
     """
-    def __init__(self, in_channels=93, out_dim=512):
+    def __init__(self, in_channels=122, out_dim=512):
         super().__init__()
         # 时序降采样：50 -> 25 -> 13 -> 7
         self.conv_net = nn.Sequential(
@@ -46,7 +46,7 @@ class ConditionEncoder(nn.Module):
         )
 
     def forward(self, x):
-        # x: (B, 93, 50)
+        # x: (B, 122, 50)
         feat = self.conv_net(x)
         out = self.fc(feat)
         return out
@@ -107,7 +107,7 @@ class VoxelFlowNet(nn.Module):
             nn.Linear(time_emb_dim * 2, time_emb_dim)
         )
         
-        self.cond_encoder = ConditionEncoder(in_channels=93, out_dim=cond_dim)
+        self.cond_encoder = ConditionEncoder(in_channels=122, out_dim=cond_dim)
         
         total_cond_dim = cond_dim + time_emb_dim
         
@@ -137,7 +137,7 @@ class VoxelFlowNet(nn.Module):
         """
         x_s: (B, 1, 20, 20, 15) 当前虚拟时间的体素流形
         s: (B,) 虚拟时间 0~1
-        c_seq: (B, 93, 50) 历史本体感知序列
+        c_seq: (B, 122, 50) 历史本体感知序列
         """
         # 1. 编码时间和条件
         t_emb = self.time_mlp(s)
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     model = VoxelFlowNet()
     x_s = torch.randn(2, 1, 20, 20, 15)
     s = torch.rand(2)
-    c_seq = torch.randn(2, 93, 50)
+    c_seq = torch.randn(2, 122, 50)
     
     out = model(x_s, s, c_seq)
     print("Input shape:", x_s.shape)

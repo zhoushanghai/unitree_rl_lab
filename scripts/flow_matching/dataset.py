@@ -55,28 +55,29 @@ class VoxelFlowDataset(Dataset):
             joint_pos = data['joint_pos']
             joint_vel = data['joint_vel']
             last_action = data['last_action']
+            joint_torques = data['joint_torques']
             
             condition = np.concatenate([
-                base_ang_vel, projected_gravity, joint_pos, joint_vel, last_action
+                base_ang_vel, projected_gravity, joint_pos, joint_vel, last_action, joint_torques
             ], axis=-1).astype(np.float32)
             
             voxel = data['collision_voxel'].astype(np.float32)
         
         # 1. 提取条件序列
         start_idx = max(0, t - self.seq_len + 1)
-        c_seq_actual = condition[start_idx : t + 1] # shape (L, 93), L <= 50
+        c_seq_actual = condition[start_idx : t + 1] # shape (L, 122), L <= 50
         
         # 如果长度不足 50 帧 (例如 t=0 时，只有 1 帧)，使用第 0 帧进行向前重复填充 (Replicate Padding)
         actual_len = c_seq_actual.shape[0]
         if actual_len < self.seq_len:
             pad_len = self.seq_len - actual_len
-            first_frame = c_seq_actual[0:1] # shape (1, 93)
-            pad_seq = np.repeat(first_frame, pad_len, axis=0) # shape (pad_len, 93)
-            c_seq = np.concatenate([pad_seq, c_seq_actual], axis=0) # shape (50, 93)
+            first_frame = c_seq_actual[0:1] # shape (1, 122)
+            pad_seq = np.repeat(first_frame, pad_len, axis=0) # shape (pad_len, 122)
+            c_seq = np.concatenate([pad_seq, c_seq_actual], axis=0) # shape (50, 122)
         else:
             c_seq = c_seq_actual
             
-        # 转置为 (Channels=93, SeqLen=50) 适配 PyTorch 1D Conv 的输入习惯
+        # 转置为 (Channels=122, SeqLen=50) 适配 PyTorch 1D Conv 的输入习惯
         c_seq = c_seq.T
         
         # 2. 提取连续两帧体素
@@ -117,7 +118,7 @@ class VoxelFlowDataset(Dataset):
             v_prev_t = v_prev_t + torch.randn_like(v_prev_t) * 0.1
             
         return {
-            'c_seq': c_seq_t,     # (93, 50)
+            'c_seq': c_seq_t,     # (122, 50)
             'v_prev': v_prev_t,   # (1, 20, 20, 15)
             'v_curr': v_curr_t,   # (1, 20, 20, 15)
             'dt_map': dt_map_t    # (1, 20, 20, 15)

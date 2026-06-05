@@ -1,9 +1,11 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import wandb
 
 from dataset import VoxelFlowDataset
 from model import VoxelFlowNet
@@ -32,23 +34,53 @@ def compute_loss(model, c_seq, v_prev, v_curr, dt_map, device):
     # 5. 基础 MSE 误差
     mse = (pred_v - target_v) ** 2
     
-    # 6. 计算基于 EDT 的惩罚权重矩阵 W(x)
-    # 找到有真实障碍物的地方 (包括 t-1 和 t 时刻)，给予基础高权重 10.0
-    mask_obs = ((v_curr + v_prev) > 0.1).float()
-    mask_air = 1.0 - mask_obs
+    # 6. 计算掩码矩阵 (完全按照你的最新逻辑)
+    # (1) 首先关注本来有碰撞点的位置 (全量实体)
+    mask_exist_raw = ((v_curr + v_prev) > 0.5).float()
+    
+    # (2) 往外延伸 1 个格子，作为冗余来判断 (包含实体 + 冗余层)
+    mask_obs_dilated = F.max_pool3d(mask_exist_raw, kernel_size=3, stride=1, padding=1)
+    
+    # (3) 没有障碍物的地方，就是除去上面所有的剩余的地方 (纯空气)
+    mask_air = 1.0 - mask_obs_dilated
+    
+    # (4) 单独关注变化的格子 (纯动态，针对最精确的变化点)
+    mask_dynamic = (torch.abs(v_curr - v_prev) > 0.5).float()
     
     # 距离惩罚系数 alpha
     alpha = 2.0 
     
-    # 有障碍物区域权重为 10，空气区域权重随 dt_map (距离场) 线性增长
-    weight = mask_obs * 10.0 + mask_air * (1.0 + alpha * dt_map)
+    # 7. 分区域计算平均误差 (依然采用解耦平均法，防止空气主导)
+    # A. 碰撞点及冗余区域 Loss (保证结构完整，赋予基础权重 10.0)
+    loss_obs = torch.sum(mask_obs_dilated * mse) / (torch.sum(mask_obs_dilated) + 1e-8)
     
-    # 7. 加权均方误差
-    loss = torch.mean(weight * mse)
+    # B. 剩余空气区域 Loss (保持背景干净，带距离场惩罚，基础权重 1.0)
+    weight_air = mask_air * (1.0 + alpha * dt_map)
+    loss_air = torch.sum(weight_air * mse) / (torch.sum(mask_air) + 1e-8)
     
-    return loss
+    # C. 单独关注的变化格子 Loss (给运动轨迹单独额外计算 Loss，赋予高权重 20.0)
+    loss_dynamic = torch.sum(mask_dynamic * mse) / (torch.sum(mask_dynamic) + 1e-8)
+    
+    # 8. 组合最终 Loss (三部分相加)
+    loss = 10.0 * loss_obs + 1.0 * loss_air + 20.0 * loss_dynamic
+    
+    return loss, loss_obs, loss_air, loss_dynamic
 
 def train():
+    # 初始化 wandb
+    wandb.init(
+        project="unitree-g1-voxel-flow",
+        name="100M_Flow_Matching",
+        config={
+            "batch_size": 128,
+            "learning_rate": 1e-4,
+            "epochs": 50,
+            "model_size": "100M",
+            "optimizer": "AdamW",
+            "scheduler": "ReduceLROnPlateau"
+        }
+    )
+
     # 配置
     data_dir = "/home/hz/project/dataset_voxel" # 适配 Docker 环境
     if not os.path.exists(data_dir):
@@ -71,6 +103,11 @@ def train():
     
     # 模型和优化器
     model = VoxelFlowNet().to(device)
+    
+    # 让 wandb 深度监听模型！
+    # 这会自动记录每一层神经网络权重的直方图 (Histograms) 和反向传播的梯度 (Gradients)
+    wandb.watch(model, log="all", log_freq=100)
+    
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     
     # 自适应学习率调度器：基于 Loss 监控的自动降衰 (ReduceLROnPlateau)
@@ -95,7 +132,7 @@ def train():
             
             optimizer.zero_grad()
             
-            loss = compute_loss(model, c_seq, v_prev, v_curr, dt_map, device)
+            loss, loss_obs, loss_air, loss_dynamic = compute_loss(model, c_seq, v_prev, v_curr, dt_map, device)
             
             loss.backward()
             
@@ -107,17 +144,35 @@ def train():
             epoch_loss += loss.item()
             pbar.set_postfix({'loss': f"{loss.item():.4f}"})
             
+            # 将 Step 的数据实时上传到 wandb 仪表盘
+            wandb.log({
+                "train/step_loss": loss.item(),
+                "train/loss_obs_raw": loss_obs.item(),
+                "train/loss_air_raw": loss_air.item(),
+                "train/loss_dynamic_raw": loss_dynamic.item(),
+                "train/learning_rate": optimizer.param_groups[0]['lr']
+            })
+            
         avg_loss = epoch_loss / len(dataloader)
         print(f"Epoch [{epoch+1}/{num_epochs}] Average Loss: {avg_loss:.4f}")
         
         # 步进自适应学习率 (根据实际跑出来的 Loss 来决定要不要降学习率)
         scheduler.step(avg_loss)
         
+        # 将 Epoch 的汇总数据记录到 wandb
+        wandb.log({
+            "train/epoch_loss": avg_loss,
+            "epoch": epoch + 1
+        })
+        
         # 每 5 个 epoch 保存一次权重
         if (epoch + 1) % 5 == 0:
             ckpt_path = f"checkpoints/flow_model_ep{epoch+1}.pth"
             torch.save(model.state_dict(), ckpt_path)
             print(f"Saved checkpoint to {ckpt_path}")
+            
+    # 结束 wandb 监控
+    wandb.finish()
 
 if __name__ == "__main__":
     train()
